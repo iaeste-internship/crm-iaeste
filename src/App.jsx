@@ -2019,11 +2019,14 @@ export default function App() {
 
   const cargar = useCallback(async () => {
     if (!session) return
+    // Supabase devuelve como máximo 1000 filas por consulta: empresas y prácticas se piden por páginas
+    // (si fallan, se quedan vacías como antes en vez de romper la carga)
+    const todas = (consulta) => traerTodo(consulta).then((data) => ({ data }), () => ({ data: null }))
     const [{ data: perfiles }, { data: emps }, { data: pracs }, { data: cents }] = await Promise.all([
       supabase.from('profiles').select('*').order('nombre'),
-      supabase.from('empresas').select('*').order('nombre'),
+      todas(() => supabase.from('empresas').select('*').order('nombre').order('id')),
       // Si la tabla practicas aún no existe, esto devuelve error y simplemente no hay históricas
-      supabase.from('practicas').select('*').order('anio'),
+      todas(() => supabase.from('practicas').select('*').order('anio').order('id')),
       // Si aún no se ha ejecutado migracion_multicentro.sql, no hay centros y todo funciona como antes
       supabase.from('centros').select('*').order('orden'),
     ])
