@@ -2112,7 +2112,8 @@ export default function App() {
   // en «Bote común» los admins reparten empresas a gente de su centro.
   const miCentro = me.centro || 'TLMA'
   const centroNombre = (id) => centros.find((c) => c.id === id)?.nombre || id
-  const vistaEf = vista && (vista === BOTE || centros.some((c) => c.id === vista)) ? vista : miCentro
+  // Los miembros solo ven su centro; las pestañas de otros centros y del bote son solo para admins
+  const vistaEf = isAdmin && vista && (vista === BOTE || centros.some((c) => c.id === vista)) ? vista : miCentro
   const enBote = vistaEf === BOTE
   const ajena = !enBote && vistaEf !== miCentro
   const usersCentro = users.filter((u) => (u.centro || 'TLMA') === miCentro)
@@ -2221,7 +2222,7 @@ export default function App() {
           <Equipo users={usersCentro} otros={usersOtros} centros={centros} companies={companies} me={me} onChanged={cargar} />
         ) : (
           <>
-            {centros.length > 0 && (
+            {isAdmin && centros.length > 0 && (
               <div className="flex gap-1.5 overflow-x-auto mb-4 pb-0.5">
                 {[...centros.map((c) => ({ id: c.id, label: c.id, title: c.nombre, n: companies.filter((x) => x.centro === c.id).length })),
                   { id: BOTE, label: 'Bote común', title: 'Empresas sin asignar, compartidas por todos los centros', n: bote.length }].map((t) => (
