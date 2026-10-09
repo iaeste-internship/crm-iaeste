@@ -49,6 +49,19 @@ const estadoDe = (id) => ESTADOS.find((e) => e.id === id) || ESTADOS[0]
 const LOTE = 5
 // Pestaña de empresas sin centro (bote común, compartido por todos los centros)
 const BOTE = '__bote'
+// Roles: admin = admin de centro (solo su centro); superadmin = admin general (todos los centros)
+const ROLES = [['miembro', 'Miembro'], ['admin', 'Admin de centro'], ['superadmin', 'Admin general']]
+const esAdminRol = (rol) => rol === 'admin' || rol === 'superadmin'
+// <option> de personas; si hay gente de varios centros, agrupadas por centro
+function OpcionesPersonas({ users }) {
+  const porCentro = {}
+  for (const u of users) (porCentro[u.centro || 'TLMA'] ||= []).push(u)
+  const grupos = Object.entries(porCentro)
+  if (grupos.length < 2) return users.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)
+  return grupos.map(([c, lista]) => (
+    <optgroup key={c} label={c}>{lista.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}</optgroup>
+  ))
+}
 const AVISO_POCAS = 2
 
 // Acciones del historial
@@ -932,7 +945,7 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30"
                   >
                     <option value="">Sin asignar{f.historica ? '' : ' (bote común)'}</option>
-                    {asignables.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    <OpcionesPersonas users={asignables} />
                     {f.responsable && !asignables.some((u) => u.id === f.responsable) && (
                       <option value={f.responsable}>{nombreResp(f.responsable) || 'Otra persona'}</option>
                     )}
@@ -1557,7 +1570,7 @@ function Ranking({ users, me, centroNombre }) {
 }
 
 // ---------- Equipo (solo admin) ----------
-function Equipo({ users, otros = [], centros = [], companies, me, onChanged }) {
+function Equipo({ users, centro, isSuper, centros = [], companies, me, onChanged }) {
   const [err, setErr] = useState('')
   const [asignando, setAsignando] = useState('')
   const cuenta = (id) => companies.filter((c) => c.responsable === id).length
@@ -1625,19 +1638,23 @@ function Equipo({ users, otros = [], centros = [], companies, me, onChanged }) {
     else onChanged()
   }
   const cambiarRol = (u, rol) => cambiarPerfil(u, { rol })
-  const selCentro = (u) => centros.length > 1 && (
+  const selCentro = (u) => isSuper && centros.length > 1 && (
     <select value={u.centro || ''} onChange={(e) => cambiarPerfil(u, { centro: e.target.value })} disabled={u.id === me.id}
       title="Centro de esta persona" className="px-2 py-1.5 rounded-lg border border-slate-300 text-xs bg-white disabled:opacity-50">
       {centros.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
     </select>
   )
-  const [verOtros, setVerOtros] = useState(false)
-  const miCentro = me.centro || 'TLMA'
+  const miCentro = centro || me.centro || 'TLMA'
   const deMiCentro = companies.filter((c) => !c.centro || c.centro === miCentro)
+  // Un admin de centro no puede tocar a un admin general ni nombrarlo
+  const rolesQuePuedo = ROLES.filter(([id]) => isSuper || id !== 'superadmin')
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-sm text-blue-900">
+        {isSuper
+          ? <>Eres <strong>admin general</strong>: estás viendo <strong>{miCentro}</strong>; cambia de centro arriba. Puedes mover gente de centro y nombrar admins de centro o generales. </>
+          : <>Eres <strong>admin de centro</strong> de {miCentro}: gestionas a tu gente y repartes empresas del bote solo a personas de {miCentro}. </>}
         Para incorporar a alguien: pídele que se <strong>registre</strong> en esta misma página. Aparecerá aquí
         como miembro y podrás asignarle empresas o hacerle admin. Si alguien olvida su contraseña,
         pulsa la llave junto a su nombre para ponerle una temporal. Para eliminar cuentas, usa el panel de Supabase (Authentication → Users).
@@ -1658,13 +1675,14 @@ function Equipo({ users, otros = [], centros = [], companies, me, onChanged }) {
         {users.map((u) => (
           <div key={u.id} className="flex items-center justify-between px-6 py-4 border-b border-slate-100 last:border-0">
             <div className="flex items-center gap-3">
-              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold ${u.rol === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
+              <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold ${u.rol === 'superadmin' ? 'bg-[#0e2d4d] text-white' : u.rol === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
                 {u.nombre[0]?.toUpperCase()}
               </div>
               <div>
                 <p className="text-sm font-medium text-slate-900 flex items-center gap-1.5">
                   {u.nombre}
-                  {u.rol === 'admin' && <Shield className="w-3.5 h-3.5 text-blue-600" />}
+                  {esAdminRol(u.rol) && <Shield className={`w-3.5 h-3.5 ${u.rol === 'superadmin' ? 'text-[#0e2d4d] fill-[#0e2d4d]/20' : 'text-blue-600'}`} />}
+                  {u.rol === 'superadmin' && <span className="text-xs text-[#0e2d4d] font-semibold">General</span>}
                   {u.id === me.id && <span className="text-xs text-slate-400">(tú)</span>}
                 </p>
                 <p className="text-xs text-slate-500">
@@ -1706,56 +1724,15 @@ function Equipo({ users, otros = [], centros = [], companies, me, onChanged }) {
             <select
               value={u.rol}
               onChange={(e) => cambiarRol(u, e.target.value)}
-              disabled={u.id === me.id}
+              disabled={u.id === me.id || (!isSuper && u.rol === 'superadmin')}
               className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm bg-white disabled:opacity-50"
             >
-              <option value="miembro">Miembro</option>
-              <option value="admin">Admin</option>
+              {(u.rol === 'superadmin' && !isSuper ? ROLES : rolesQuePuedo).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
             </select>
             </div>
           </div>
         ))}
       </div>
-
-      {otros.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
-          <button onClick={() => setVerOtros(!verOtros)} className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-slate-50">
-            <span className="text-sm font-semibold text-slate-900">Personas de otros centros · {otros.length}</span>
-            <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${verOtros ? 'rotate-90' : ''}`} />
-          </button>
-          {verOtros && (
-            <>
-              <p className="px-6 pb-3 text-xs text-slate-500">
-                Para dar de admin a la primera persona de cada comité, o corregir a quien se registró en el centro equivocado.
-              </p>
-              {centros.filter((c) => c.id !== miCentro).map((c) => {
-                const gente = otros.filter((u) => u.centro === c.id)
-                if (!gente.length) return null
-                return (
-                  <div key={c.id} className="border-t border-slate-100">
-                    <p className="px-6 pt-3 pb-1 text-xs font-semibold text-slate-500 uppercase tracking-wide">{c.nombre}</p>
-                    {gente.map((u) => (
-                      <div key={u.id} className="flex items-center justify-between px-6 py-2.5">
-                        <p className="text-sm text-slate-800 flex items-center gap-1.5">
-                          {u.nombre}{u.rol === 'admin' && <Shield className="w-3.5 h-3.5 text-blue-600" />}
-                        </p>
-                        <div className="flex items-center gap-2">
-                          {selCentro(u)}
-                          <select value={u.rol} onChange={(e) => cambiarRol(u, e.target.value)}
-                            className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm bg-white">
-                            <option value="miembro">Miembro</option>
-                            <option value="admin">Admin</option>
-                          </select>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )
-              })}
-            </>
-          )}
-        </div>
-      )}
 
       {passDe && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={() => setPassDe(null)}>
@@ -2028,6 +2005,7 @@ export default function App() {
   const [movidas, setMovidas] = useState(null) // ids de empresas con nota o cambio de estado en los últimos SIN_MOVER.dias
   const [centros, setCentros] = useState([])
   const [vista, setVista] = useState('') // '' = mi centro | id de otro centro (solo lectura) | BOTE
+  const [centroSel, setCentroSel] = useState('') // admin general: centro que está gestionando
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null))
@@ -2103,29 +2081,33 @@ export default function App() {
     return <div className="min-h-screen bg-[#f4f6fa] flex items-center justify-center text-slate-400 text-sm">Preparando tu perfil…</div>
   }
 
-  const isAdmin = me.rol === 'admin'
+  const isSuper = me.rol === 'superadmin'
+  const isAdmin = esAdminRol(me.rol)
   const nombreDe = (id) => users.find((u) => u.id === id)?.nombre || 'Sin asignar'
 
   // ---- Centros ----
   // Cada empresa tiene un centro (el de su responsable) o ninguno = bote común, compartido por todos.
   // En la pestaña de mi centro todo funciona como siempre; la de otro centro es de solo lectura;
   // en «Bote común» los admins reparten empresas a gente de su centro.
-  const miCentro = me.centro || 'TLMA'
+  // Centro activo: el propio; un admin general puede cambiarlo y entonces todo se ve de ese centro
+  const miCentro = (isSuper && centroSel && centros.some((c) => c.id === centroSel)) ? centroSel : (me.centro || 'TLMA')
   const centroNombre = (id) => centros.find((c) => c.id === id)?.nombre || id
   // Los miembros solo ven su centro; las pestañas de otros centros y del bote son solo para admins
   const vistaEf = isAdmin && vista && (vista === BOTE || centros.some((c) => c.id === vista)) ? vista : miCentro
   const enBote = vistaEf === BOTE
   const ajena = !enBote && vistaEf !== miCentro
   const usersCentro = users.filter((u) => (u.centro || 'TLMA') === miCentro)
-  const usersOtros = users.filter((u) => (u.centro || 'TLMA') !== miCentro)
   const companiesCentro = companies.filter((c) => c.centro === miCentro)
   const bote = companies.filter((c) => !c.centro)
   const companiesVista = enBote ? bote : companies.filter((c) => c.centro === vistaEf)
   const usersVista = enBote ? usersCentro : users.filter((u) => (u.centro || 'TLMA') === vistaEf)
   // Un admin solo puede editar empresas de su centro o del bote común (también lo impone la base de datos)
-  const puedeEditar = (c) => isAdmin && (!c || !c.centro || c.centro === miCentro)
+  const puedeEditar = (c) => isAdmin && (isSuper || !c || !c.centro || c.centro === miCentro)
+  // A quién se puede asignar: admin de centro, a su gente; admin general, a todo el mundo
+  const asignables = isSuper ? users : usersCentro
   // En el bote o en otro centro se ven todas las empresas de esa pestaña, no solo las mías
   const verTodo = isAdmin || enBote || ajena
+  const cambiarCentro = (c) => { setCentroSel(c); setVista(''); setSelec([]); setFiltroPersona(''); setFiltroEstado(''); setAgenda('') }
   const cambiarVista = (v) => { setVista(v); setSelec([]); setFiltroPersona(''); setFiltroEstado(''); setAgenda(''); if (v === BOTE) setGrupo('disponibles') }
 
   const hoy = HOY()
@@ -2170,7 +2152,13 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <LogoIaeste />
-            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && <> · <span className="text-white/90">{miCentro}</span></>}</span>
+            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && !isSuper && <> · <span className="text-white/90">{miCentro}</span></>}</span>
+            {isSuper && centros.length > 0 && (
+              <select value={miCentro} onChange={(e) => cambiarCentro(e.target.value)} title="Centro que estás gestionando"
+                className="bg-white/10 text-white text-sm font-semibold rounded-full px-3 py-1 border border-white/20 focus:outline-none [&>option]:text-slate-900">
+                {centros.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+              </select>
+            )}
           </div>
           <div className="flex items-center gap-1.5 sm:gap-3">
             {(
@@ -2219,7 +2207,7 @@ export default function App() {
         ) : tab === 'seguimiento' && isAdmin ? (
           <Seguimiento users={usersCentro} companies={companies} version={claveEmpresas} onAbrir={setModal} />
         ) : tab === 'equipo' && isAdmin ? (
-          <Equipo users={usersCentro} otros={usersOtros} centros={centros} companies={companies} me={me} onChanged={cargar} />
+          <Equipo users={usersCentro} centro={miCentro} isSuper={isSuper} centros={centros} companies={companies} me={me} onChanged={cargar} />
         ) : (
           <>
             {isAdmin && centros.length > 0 && (
@@ -2228,7 +2216,7 @@ export default function App() {
                   { id: BOTE, label: 'Bote común', title: 'Empresas sin asignar, compartidas por todos los centros', n: bote.length }].map((t) => (
                   <button
                     key={t.id}
-                    onClick={() => cambiarVista(t.id === miCentro ? '' : t.id)}
+                    onClick={() => isSuper && t.id !== BOTE ? cambiarCentro(t.id) : cambiarVista(t.id === miCentro ? '' : t.id)}
                     title={t.title}
                     className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-full text-sm border transition-colors ${
                       vistaEf === t.id
@@ -2237,7 +2225,7 @@ export default function App() {
                     }`}
                   >
                     {t.id === BOTE && <Inbox className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />}
-                    {t.label}{t.id === miCentro && <span className={vistaEf === t.id ? 'text-white/60' : 'text-slate-400'}> (tu centro)</span>}
+                    {t.label}{t.id === (me.centro || 'TLMA') && <span className={vistaEf === t.id ? 'text-white/60' : 'text-slate-400'}> (tu centro)</span>}
                     <span className={vistaEf === t.id ? 'text-white/50' : 'text-slate-400'}> · {t.n}</span>
                   </button>
                 ))}
@@ -2251,7 +2239,7 @@ export default function App() {
             {enBote && (
               <p className="mb-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
                 <strong>Bote común:</strong> empresas sin asignar que comparten todos los centros. En cuanto se asigna una a alguien, pasa al centro de esa persona; si se le quita, vuelve aquí.
-                {isAdmin && <> Marca las que quieras y asígnalas a gente de {miCentro}.</>}
+                {isAdmin && (isSuper ? <> Marca las que quieras y asígnalas a quien quieras.</> : <> Marca las que quieras y asígnalas a gente de {miCentro}.</>)}
               </p>
             )}
             {!agendaVisible ? null : misSinContactar === 0 ? (
@@ -2413,7 +2401,7 @@ export default function App() {
                   <select value={asignarA} onChange={(e) => setAsignarA(e.target.value)}
                     className="px-3 py-1.5 rounded-full text-sm text-slate-900 bg-white">
                     <option value="">Asignar a…</option>
-                    {usersCentro.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    <OpcionesPersonas users={asignables} />
                   </select>
                   <button onClick={asignarSeleccion} disabled={!selec.length || !asignarA || asignando}
                     className="px-4 py-1.5 rounded-full text-sm font-bold bg-white text-[#0e2d4d] disabled:opacity-40">
@@ -2482,11 +2470,11 @@ export default function App() {
         )}
       </main>
 
-      {modal && ( 
+      {modal && (
         <EmpresaModal
           empresa={modal === 'nueva' ? null : modal}
           users={users}
-          asignables={usersCentro}
+          asignables={asignables}
           centros={centros}
           isAdmin={modal === 'nueva' ? isAdmin : puedeEditar(modal)}
           me={me}
