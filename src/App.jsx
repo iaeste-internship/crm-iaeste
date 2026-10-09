@@ -47,6 +47,8 @@ const estadoDe = (id) => ESTADOS.find((e) => e.id === id) || ESTADOS[0]
 
 // Cuántas empresas sin contactar se asignan de golpe y a partir de cuántas se avisa
 const LOTE = 5
+// Pestaña de empresas sin centro (bote común, compartido por todos los centros)
+const BOTE = '__bote'
 const AVISO_POCAS = 2
 
 // Acciones del historial
@@ -448,7 +450,14 @@ function Auth() {
   const [info, setInfo] = useState('')
   const [sinConfirmar, setSinConfirmar] = useState('') // email pendiente de confirmar (para reenviar)
   const [busy, setBusy] = useState(false)
+  const [centros, setCentros] = useState([])
+  const [centro, setCentro] = useState('')
   const volverA = window.location.origin
+
+  // Lista de centros para el registro (la tabla se puede leer sin sesión)
+  useEffect(() => {
+    supabase.from('centros').select('id, nombre').order('orden').then(({ data }) => setCentros(data || []))
+  }, [])
 
   const cambiarModo = (m) => { setModo(m); setErr(''); setInfo(''); setSinConfirmar(''); setPass(''); setPass2('') }
 
@@ -481,6 +490,7 @@ function Auth() {
     try {
       if (modo === 'registro') {
         if (!nombre.trim()) throw new Error('Indica tu nombre.')
+        if (centros.length && !centro) throw new Error('Elige tu centro.')
         const probE = problemaEmail(e)
         if (probE) throw new Error(probE)
         const probP = problemaPass(pass)
@@ -490,7 +500,7 @@ function Auth() {
         const { data, error } = await supabase.auth.signUp({
           email: e,
           password: pass,
-          options: { data: { nombre: nombre.trim() }, emailRedirectTo: volverA },
+          options: { data: { nombre: nombre.trim(), ...(centro ? { centro } : {}) }, emailRedirectTo: volverA },
         })
         if (error) throw error
         // Con «Confirm email» activado en Supabase no hay sesión hasta pulsar el enlace del correo.
@@ -556,6 +566,16 @@ function Auth() {
         <div className="space-y-3">
           {modo === 'registro' && (
             <div><Label>Nombre</Label><Input value={nombre} autoComplete="name" onChange={(e) => setNombre(e.target.value)} placeholder="Mario" /></div>
+          )}
+          {modo === 'registro' && centros.length > 0 && (
+            <div>
+              <Label>Centro</Label>
+              <select value={centro} onChange={(e) => setCentro(e.target.value)}
+                className={`w-full px-3 py-2 rounded-lg border text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30 ${centro ? 'border-slate-300 text-slate-900' : 'border-slate-300 text-slate-400'}`}>
+                <option value="">Elige tu comité…</option>
+                {centros.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+              </select>
+            </div>
           )}
           <div><Label>Email</Label><Input type="email" autoComplete="email" autoCapitalize="none" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={alPulsarEnter} /></div>
           {modo !== 'olvido' && (
@@ -652,7 +672,7 @@ function AccionesContacto({ emp, yo, onEmail }) {
 }
 
 // ---------- Modal de empresa ----------
-function EmpresaModal({ empresa, users, isAdmin, me, todas = [], onSaved, onDeleted, onClose }) {
+function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmin, me, todas = [], onSaved, onDeleted, onClose }) {
   const nueva = !empresa
   const [fForm, setF] = useState(
     empresa || { nombre: '', cif: '', sector: '', contacto: '', email: '', telefono: '', direccion: '', responsable: null, estado: 'sin_contactar', notas: '', proximo_contacto: null }
@@ -833,7 +853,8 @@ function EmpresaModal({ empresa, users, isAdmin, me, todas = [], onSaved, onDele
           <div className="p-6 space-y-4 text-sm text-slate-700">
             <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3">
               <span className="flex items-center gap-2"><User className="w-4 h-4 text-slate-400" />
-                {empresa.responsable ? <>La lleva <strong>{nombreResp(empresa.responsable) || 'otra persona'}</strong></> : 'Sin asignar'}</span>
+                {empresa.responsable ? <>La lleva <strong>{nombreResp(empresa.responsable) || 'otra persona'}</strong></> : 'Sin asignar'}
+                <span className="text-slate-400">· {empresa.centro ? (centros.find((c) => c.id === empresa.centro)?.id || empresa.centro) : 'Bote común'}</span></span>
               <Badge estadoId={f.estado} />
             </div>
             {empresa.historica && (
@@ -910,8 +931,11 @@ function EmpresaModal({ empresa, users, isAdmin, me, todas = [], onSaved, onDele
                     onChange={(e) => set('responsable', e.target.value || null)}
                     className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30"
                   >
-                    <option value="">Sin asignar</option>
-                    {users.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    <option value="">Sin asignar{f.historica ? '' : ' (bote común)'}</option>
+                    {asignables.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    {f.responsable && !asignables.some((u) => u.id === f.responsable) && (
+                      <option value={f.responsable}>{nombreResp(f.responsable) || 'Otra persona'}</option>
+                    )}
                   </select>
                 </div>
               ) : (
@@ -1230,7 +1254,9 @@ function calcularPuntos({ todo, companies, users, desde, hasta }) {
 
   users.forEach((u) => de(u.id))
   for (const r of Object.values(resumen)) r.filas.sort((a, b) => new Date(b.creado || 0) - new Date(a.creado || 0))
-  const lista = Object.values(resumen).sort((a, b) => b.puntos - a.puntos || a.nombre.localeCompare(b.nombre))
+  // Solo la gente que se ha pasado en «users» (la del centro): cada centro tiene sus propios puntos
+  const ids = new Set(users.map((u) => u.id))
+  const lista = Object.values(resumen).filter((r) => ids.has(r.id)).sort((a, b) => b.puntos - a.puntos || a.nombre.localeCompare(b.nombre))
   return { lista }
 }
 
@@ -1452,7 +1478,7 @@ function Actividad({ users, companies }) {
 }
 // ---------- Ranking (visible para todo el equipo) ----------
 const INICIO_MES = () => { const d = new Date(); return isoDia(new Date(d.getFullYear(), d.getMonth(), 1)) }
-function Ranking({ users, me }) {
+function Ranking({ users, me, centroNombre }) {
   const [periodo, setPeriodo] = useState('mes')
   const [datos, setDatos] = useState(null)
   const [err, setErr] = useState('')
@@ -1481,7 +1507,7 @@ function Ranking({ users, me }) {
     <div className="max-w-2xl mx-auto space-y-4">
       <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)]">
         <div className="flex items-center justify-between gap-3 flex-wrap">
-          <h2 className="text-lg font-bold flex items-center gap-2"><Trophy className="w-5 h-5 text-amber-300" />Ranking del equipo</h2>
+          <h2 className="text-lg font-bold flex items-center gap-2"><Trophy className="w-5 h-5 text-amber-300" />Ranking {centroNombre ? `· ${centroNombre}` : 'del equipo'}</h2>
           <div className="flex gap-1 bg-white/10 rounded-full p-1">
             {[['mes', 'Este mes'], ['curso', 'Curso'], ['7', '7 días']].map(([id, label]) => (
               <button key={id} onClick={() => setPeriodo(id)}
@@ -1531,13 +1557,14 @@ function Ranking({ users, me }) {
 }
 
 // ---------- Equipo (solo admin) ----------
-function Equipo({ users, companies, me, onChanged }) {
+function Equipo({ users, otros = [], centros = [], companies, me, onChanged }) {
   const [err, setErr] = useState('')
   const [asignando, setAsignando] = useState('')
   const cuenta = (id) => companies.filter((c) => c.responsable === id).length
   const sinContactar = (id) => companies.filter((c) => c.responsable === id && c.estado === 'sin_contactar').length
+  // Los lotes salen del bote común (empresas sin centro), compartido por todos los centros.
   // Las históricas no entran en los lotes: solo se asignan a mano desde la ficha
-  const libres = companies.filter((c) => !c.responsable && c.estado === 'sin_contactar' && !c.historica)
+  const libres = companies.filter((c) => !c.centro && !c.responsable && c.estado === 'sin_contactar' && !c.historica)
 
   const asignarLote = async (u) => {
     setErr(''); setAsignando(u.id)
@@ -1590,12 +1617,23 @@ function Equipo({ users, companies, me, onChanged }) {
     setPassDe(null); setPassTmp('')
   }
 
-  const cambiarRol = async (u, rol) => {
+  const cambiarPerfil = async (u, patch) => {
     setErr('')
-    const { error } = await supabase.from('profiles').update({ rol }).eq('id', u.id)
+    if (patch.centro && !confirm(`¿Pasar a ${u.nombre} a ${patch.centro}? Sus empresas asignadas se irán con esa persona a ${patch.centro}.`)) return
+    const { error } = await supabase.from('profiles').update(patch).eq('id', u.id)
     if (error) setErr(error.message)
     else onChanged()
   }
+  const cambiarRol = (u, rol) => cambiarPerfil(u, { rol })
+  const selCentro = (u) => centros.length > 1 && (
+    <select value={u.centro || ''} onChange={(e) => cambiarPerfil(u, { centro: e.target.value })} disabled={u.id === me.id}
+      title="Centro de esta persona" className="px-2 py-1.5 rounded-lg border border-slate-300 text-xs bg-white disabled:opacity-50">
+      {centros.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+    </select>
+  )
+  const [verOtros, setVerOtros] = useState(false)
+  const miCentro = me.centro || 'TLMA'
+  const deMiCentro = companies.filter((c) => !c.centro || c.centro === miCentro)
 
   return (
     <div className="max-w-2xl mx-auto space-y-4">
@@ -1607,12 +1645,12 @@ function Equipo({ users, companies, me, onChanged }) {
       {err && <p className="text-sm text-rose-600">{err}</p>}
       {passOk && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{passOk}</p>}
 
-      <GraficaEmpresas users={users} companies={companies} />
+      <GraficaEmpresas users={users} companies={deMiCentro} />
 
       <Actividad users={users} companies={companies} />
 
       <p className="text-xs text-slate-500 px-1">
-        Bote común: <strong>{libres.length}</strong> empresas sin asignar en estado «Sin contactar» (sin contar las históricas, que se asignan a mano desde su ficha).
+        Bote común (compartido con todos los centros): <strong>{libres.length}</strong> empresas sin asignar en estado «Sin contactar» (sin contar las históricas, que se asignan a mano desde su ficha).
         El botón <strong>+{LOTE}</strong> reparte las {LOTE} primeras a esa persona y <strong>−{LOTE}</strong> le quita {LOTE} de las que aún tiene sin contactar (vuelven al bote).
       </p>
 
@@ -1664,6 +1702,7 @@ function Equipo({ users, companies, me, onChanged }) {
                   <KeyRound className="w-3.5 h-3.5" />
                 </button>
               )}
+            {selCentro(u)}
             <select
               value={u.rol}
               onChange={(e) => cambiarRol(u, e.target.value)}
@@ -1677,6 +1716,46 @@ function Equipo({ users, companies, me, onChanged }) {
           </div>
         ))}
       </div>
+
+      {otros.length > 0 && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
+          <button onClick={() => setVerOtros(!verOtros)} className="w-full flex items-center justify-between px-6 py-4 text-left hover:bg-slate-50">
+            <span className="text-sm font-semibold text-slate-900">Personas de otros centros · {otros.length}</span>
+            <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${verOtros ? 'rotate-90' : ''}`} />
+          </button>
+          {verOtros && (
+            <>
+              <p className="px-6 pb-3 text-xs text-slate-500">
+                Para dar de admin a la primera persona de cada comité, o corregir a quien se registró en el centro equivocado.
+              </p>
+              {centros.filter((c) => c.id !== miCentro).map((c) => {
+                const gente = otros.filter((u) => u.centro === c.id)
+                if (!gente.length) return null
+                return (
+                  <div key={c.id} className="border-t border-slate-100">
+                    <p className="px-6 pt-3 pb-1 text-xs font-semibold text-slate-500 uppercase tracking-wide">{c.nombre}</p>
+                    {gente.map((u) => (
+                      <div key={u.id} className="flex items-center justify-between px-6 py-2.5">
+                        <p className="text-sm text-slate-800 flex items-center gap-1.5">
+                          {u.nombre}{u.rol === 'admin' && <Shield className="w-3.5 h-3.5 text-blue-600" />}
+                        </p>
+                        <div className="flex items-center gap-2">
+                          {selCentro(u)}
+                          <select value={u.rol} onChange={(e) => cambiarRol(u, e.target.value)}
+                            className="px-3 py-1.5 rounded-lg border border-slate-300 text-sm bg-white">
+                            <option value="miembro">Miembro</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </>
+          )}
+        </div>
+      )}
 
       {passDe && (
         <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={() => setPassDe(null)}>
@@ -1791,7 +1870,9 @@ function Seguimiento({ users, companies, version, onAbrir }) {
       else out.push(h)
     }
     const q = busca.trim().toLowerCase()
+    const equipo = new Set(users.map((u) => u.id)) // solo movimientos de la gente del centro
     return out
+      .filter((h) => equipo.has(h.usuario_id))
       .filter((h) => tipo === 'todo' || h.accion === 'estado' || h.accion === 'nota')
       .filter((h) => !persona || h.usuario_id === persona)
       .filter((h) => !q || (h.empresa_nombre || '').toLowerCase().includes(q) || (h.texto || '').toLowerCase().includes(q))
@@ -1945,6 +2026,8 @@ export default function App() {
   const [aviso, setAviso] = useState('')
   const [cambiarPass, setCambiarPass] = useState('') // '' | 'normal' | 'recuperacion'
   const [movidas, setMovidas] = useState(null) // ids de empresas con nota o cambio de estado en los últimos SIN_MOVER.dias
+  const [centros, setCentros] = useState([])
+  const [vista, setVista] = useState('') // '' = mi centro | id de otro centro (solo lectura) | BOTE
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null))
@@ -1958,12 +2041,15 @@ export default function App() {
 
   const cargar = useCallback(async () => {
     if (!session) return
-    const [{ data: perfiles }, { data: emps }, { data: pracs }] = await Promise.all([
+    const [{ data: perfiles }, { data: emps }, { data: pracs }, { data: cents }] = await Promise.all([
       supabase.from('profiles').select('*').order('nombre'),
       supabase.from('empresas').select('*').order('nombre'),
       // Si la tabla practicas aún no existe, esto devuelve error y simplemente no hay históricas
       supabase.from('practicas').select('*').order('anio'),
+      // Si aún no se ha ejecutado migracion_multicentro.sql, no hay centros y todo funciona como antes
+      supabase.from('centros').select('*').order('orden'),
     ])
+    setCentros(cents || [])
     const porEmpresa = {}
     for (const p of pracs || []) (porEmpresa[p.empresa_id] ||= []).push(p)
     setUsers(perfiles || [])
@@ -2020,22 +2106,44 @@ export default function App() {
   const isAdmin = me.rol === 'admin'
   const nombreDe = (id) => users.find((u) => u.id === id)?.nombre || 'Sin asignar'
 
+  // ---- Centros ----
+  // Cada empresa tiene un centro (el de su responsable) o ninguno = bote común, compartido por todos.
+  // En la pestaña de mi centro todo funciona como siempre; la de otro centro es de solo lectura;
+  // en «Bote común» los admins reparten empresas a gente de su centro.
+  const miCentro = me.centro || 'TLMA'
+  const centroNombre = (id) => centros.find((c) => c.id === id)?.nombre || id
+  const vistaEf = vista && (vista === BOTE || centros.some((c) => c.id === vista)) ? vista : miCentro
+  const enBote = vistaEf === BOTE
+  const ajena = !enBote && vistaEf !== miCentro
+  const usersCentro = users.filter((u) => (u.centro || 'TLMA') === miCentro)
+  const usersOtros = users.filter((u) => (u.centro || 'TLMA') !== miCentro)
+  const companiesCentro = companies.filter((c) => c.centro === miCentro)
+  const bote = companies.filter((c) => !c.centro)
+  const companiesVista = enBote ? bote : companies.filter((c) => c.centro === vistaEf)
+  const usersVista = enBote ? usersCentro : users.filter((u) => (u.centro || 'TLMA') === vistaEf)
+  // Un admin solo puede editar empresas de su centro o del bote común (también lo impone la base de datos)
+  const puedeEditar = (c) => isAdmin && (!c || !c.centro || c.centro === miCentro)
+  // En el bote o en otro centro se ven todas las empresas de esa pestaña, no solo las mías
+  const verTodo = isAdmin || enBote || ajena
+  const cambiarVista = (v) => { setVista(v); setSelec([]); setFiltroPersona(''); setFiltroEstado(''); setAgenda(''); if (v === BOTE) setGrupo('disponibles') }
+
   const hoy = HOY()
   const misSinContactar = companies.filter((c) => c.responsable === me.id && c.estado === 'sin_contactar').length
   // Recordatorios: un miembro solo cuenta los de sus empresas
-  const deAgenda = isAdmin ? companies : companies.filter((c) => c.responsable === me.id)
+  const deAgenda = isAdmin ? companiesCentro : companies.filter((c) => c.responsable === me.id)
   const nAtrasadas = deAgenda.filter((c) => c.proximo_contacto && c.proximo_contacto < hoy).length
   const nHoy = deAgenda.filter((c) => c.proximo_contacto === hoy).length
   // Empresas en seguimiento sin nota ni cambio de estado en SIN_MOVER.dias (y sin próximo contacto a futuro)
   const sinMover = (c) => !!movidas && !!c.responsable && SIN_MOVER.estados.includes(c.estado) &&
-    !(c.proximo_contacto && c.proximo_contacto > hoy) && !movidas.has(c.id) && (isAdmin || c.responsable === me.id)
+    !(c.proximo_contacto && c.proximo_contacto > hoy) && !movidas.has(c.id) && (isAdmin ? c.centro === miCentro : c.responsable === me.id)
   const nSinMover = deAgenda.filter(sinMover).length
 
   // Los miembros ven Disponibles / Seguimiento / Cerradas (solo las suyas) y Todas (todas, en solo lectura)
   const gruposVisibles = GRUPOS.filter((g) => isAdmin || !g.soloAdmin)
   const grupoEf = gruposVisibles.some((g) => g.id === grupo) ? grupo : gruposVisibles[0].id
-  const modoAsignar = isAdmin && filtroPersona === '__sin'
-  const visibles = companies
+  const modoAsignar = isAdmin && !ajena && (enBote || filtroPersona === '__sin')
+  const agendaVisible = !enBote && !ajena
+  const visibles = companiesVista
     .filter((c) => {
       if (agenda && !isAdmin && c.responsable !== me.id) return false
       if (agenda === 'hoy') return c.proximo_contacto && c.proximo_contacto <= hoy
@@ -2044,7 +2152,7 @@ export default function App() {
       return true
     })
     // Con «Para hoy» / «Atrasadas» activo se ven todas las que tocan, sea cual sea el apartado
-    .filter((c) => agenda || enGrupo(grupoDe(grupoEf), c, me.id, isAdmin))
+    .filter((c) => (agenda && agendaVisible) || enGrupo(grupoDe(grupoEf), c, me.id, verTodo))
     .filter((c) => !filtroEstado || c.estado === filtroEstado)
     .filter((c) => !filtroPersona || (filtroPersona === '__sin' ? !c.responsable : c.responsable === filtroPersona))
     .filter((c) => {
@@ -2061,7 +2169,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <LogoIaeste />
-            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM</span>
+            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && <> · <span className="text-white/90">{miCentro}</span></>}</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-3">
             {(
@@ -2106,14 +2214,46 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 'ranking' ? (
-          <Ranking users={users} me={me} />
+          <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} />
         ) : tab === 'seguimiento' && isAdmin ? (
-          <Seguimiento users={users} companies={companies} version={claveEmpresas} onAbrir={setModal} />
+          <Seguimiento users={usersCentro} companies={companies} version={claveEmpresas} onAbrir={setModal} />
         ) : tab === 'equipo' && isAdmin ? (
-          <Equipo users={users} companies={companies} me={me} onChanged={cargar} />
+          <Equipo users={usersCentro} otros={usersOtros} centros={centros} companies={companies} me={me} onChanged={cargar} />
         ) : (
           <>
-            {misSinContactar === 0 ? (
+            {centros.length > 0 && (
+              <div className="flex gap-1.5 overflow-x-auto mb-4 pb-0.5">
+                {[...centros.map((c) => ({ id: c.id, label: c.id, title: c.nombre, n: companies.filter((x) => x.centro === c.id).length })),
+                  { id: BOTE, label: 'Bote común', title: 'Empresas sin asignar, compartidas por todos los centros', n: bote.length }].map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => cambiarVista(t.id === miCentro ? '' : t.id)}
+                    title={t.title}
+                    className={`shrink-0 whitespace-nowrap px-3.5 py-1.5 rounded-full text-sm border transition-colors ${
+                      vistaEf === t.id
+                        ? 'bg-[#0e2d4d] text-white border-[#0e2d4d] font-bold'
+                        : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 font-medium'
+                    }`}
+                  >
+                    {t.id === BOTE && <Inbox className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />}
+                    {t.label}{t.id === miCentro && <span className={vistaEf === t.id ? 'text-white/60' : 'text-slate-400'}> (tu centro)</span>}
+                    <span className={vistaEf === t.id ? 'text-white/50' : 'text-slate-400'}> · {t.n}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+            {ajena && (
+              <p className="mb-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                Estás viendo las empresas de <strong>{centroNombre(vistaEf)}</strong>. Solo lectura: las gestiona su comité.
+              </p>
+            )}
+            {enBote && (
+              <p className="mb-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600">
+                <strong>Bote común:</strong> empresas sin asignar que comparten todos los centros. En cuanto se asigna una a alguien, pasa al centro de esa persona; si se le quita, vuelve aquí.
+                {isAdmin && <> Marca las que quieras y asígnalas a gente de {miCentro}.</>}
+              </p>
+            )}
+            {!agendaVisible ? null : misSinContactar === 0 ? (
               <div className="flex items-start gap-2.5 mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 <Inbox className="w-4 h-4 mt-0.5 shrink-0" />
                 <p>
@@ -2129,8 +2269,8 @@ export default function App() {
                 <p>Te quedan <strong>{misSinContactar}</strong> empresas sin contactar. Ve pidiendo el siguiente lote.</p>
               </div>
             )}
-            <MiQuincena me={me} companies={companies} onAbrir={setModal} />
-            {(nHoy + nAtrasadas + nSinMover) > 0 && (
+            {agendaVisible && <MiQuincena me={me} companies={companies} onAbrir={setModal} />}
+            {agendaVisible && (nHoy + nAtrasadas + nSinMover) > 0 && (
               <div className="flex flex-wrap gap-2 mb-4">
                 {nSinMover > 0 && (
                   <button
@@ -2171,7 +2311,7 @@ export default function App() {
 
             <div className={`flex sm:grid ${isAdmin ? 'sm:grid-cols-5' : 'sm:grid-cols-4'} gap-1.5 overflow-x-auto bg-[#0e2d4d] rounded-xl p-1.5 mb-4 shadow-[0_4px_16px_rgba(13,43,69,0.18)]`}>
               {gruposVisibles.map((g) => {
-                const n = companies.filter((c) => enGrupo(g, c, me.id, isAdmin)).length
+                const n = companiesVista.filter((c) => enGrupo(g, c, me.id, verTodo)).length
                 return (
                   <button
                     key={g.id}
@@ -2189,9 +2329,9 @@ export default function App() {
             {(() => {
               const g = grupoDe(grupoEf)
               // A los miembros no se les ponen filtros de estado en «Todas», para no saturar
-              if (!isAdmin && g.id === 'todas') return <div className="mb-2" />
-              const delGrupo = companies.filter((c) => enGrupo(g, c, me.id, isAdmin))
-              const chips = ESTADOS.filter((e) => ((g.historicas || !isAdmin) ? delGrupo.some((c) => c.estado === e.id) : (!g.estados || g.estados.includes(e.id))))
+              if (!verTodo && g.id === 'todas') return <div className="mb-2" />
+              const delGrupo = companiesVista.filter((c) => enGrupo(g, c, me.id, verTodo))
+              const chips = ESTADOS.filter((e) => ((g.historicas || !verTodo) ? delGrupo.some((c) => c.estado === e.id) : (!g.estados || g.estados.includes(e.id))))
               if (chips.length < 2) return <div className="mb-2" />
               const total = delGrupo.length
               return (
@@ -2228,15 +2368,15 @@ export default function App() {
               </div>
               {isAdmin && (
                 <>
-                  <select
+                  {!enBote && <select
                     value={filtroPersona}
                     onChange={(e) => { setFiltroPersona(e.target.value); setSelec([]) }}
                     className="px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white"
                   >
                     <option value="">Todo el equipo</option>
-                    <option value="__sin">Sin asignar ({companies.filter((c) => !c.responsable).length})</option>
-                    {users.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
-                  </select>
+                    <option value="__sin">Sin asignar ({companiesVista.filter((c) => !c.responsable).length})</option>
+                    {usersVista.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                  </select>}
                   <button
                     onClick={() => exportarEmpresas(visibles, nombreDe)}
                     title="Exportar a Excel"
@@ -2246,13 +2386,14 @@ export default function App() {
                   </button>
                 </>
               )}
-              <Btn onClick={() => setModal('nueva')}><Plus className="w-4 h-4" /><span className="hidden sm:inline">Empresa</span></Btn>
+              {!ajena && <Btn onClick={() => setModal('nueva')}><Plus className="w-4 h-4" /><span className="hidden sm:inline">Empresa</span></Btn>}
             </div>
 
             {visibles.length === 0 ? (
               <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] p-12 text-center text-slate-400 text-sm">
-                {companies.length === 0
-                  ? isAdmin
+                {companiesVista.length === 0
+                  ? (ajena || enBote) ? 'No hay empresas en esta pestaña.'
+                  : isAdmin
                     ? 'Todavía no hay empresas. Añade la primera con el botón «Empresa».'
                     : 'No tienes empresas asignadas todavía. Puedes añadir una con el botón «Empresa».'
                   : 'Ninguna empresa coincide con el filtro.'}
@@ -2271,7 +2412,7 @@ export default function App() {
                   <select value={asignarA} onChange={(e) => setAsignarA(e.target.value)}
                     className="px-3 py-1.5 rounded-full text-sm text-slate-900 bg-white">
                     <option value="">Asignar a…</option>
-                    {users.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                    {usersCentro.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
                   </select>
                   <button onClick={asignarSeleccion} disabled={!selec.length || !asignarA || asignando}
                     className="px-4 py-1.5 rounded-full text-sm font-bold bg-white text-[#0e2d4d] disabled:opacity-40">
@@ -2344,7 +2485,9 @@ export default function App() {
         <EmpresaModal
           empresa={modal === 'nueva' ? null : modal}
           users={users}
-          isAdmin={isAdmin}
+          asignables={usersCentro}
+          centros={centros}
+          isAdmin={modal === 'nueva' ? isAdmin : puedeEditar(modal)}
           me={me}
           todas={companies}
           onSaved={(m) => { setModal(null); cargar(); flash(m || 'Guardado ✓', m ? 6000 : 2500) }}
