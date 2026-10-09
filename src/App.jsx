@@ -2482,7 +2482,7 @@ export default function App() {
         )}
       </main>
 
-      {modal && (
+      {modal && ( 
         <EmpresaModal
           empresa={modal === 'nueva' ? null : modal}
           users={users}
