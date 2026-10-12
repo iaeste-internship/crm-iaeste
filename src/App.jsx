@@ -1653,7 +1653,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, onChanged
     <div className="max-w-2xl mx-auto space-y-4">
       <div className="bg-blue-50 border border-blue-200 rounded-2xl p-5 text-sm text-blue-900">
         {isSuper
-          ? <>Eres <strong>admin general</strong>: estás viendo <strong>{miCentro}</strong>; cambia de centro arriba. Puedes mover gente de centro y nombrar admins de centro o generales. </>
+          ? <>Eres <strong>admin general</strong>: estás viendo <strong>{miCentro}</strong>; cambia de centro con las pestañas de centro en Empresas. Puedes mover gente de centro y nombrar admins de centro o generales. </>
           : <>Eres <strong>admin de centro</strong> de {miCentro}: gestionas a tu gente y repartes empresas del bote solo a personas de {miCentro}. </>}
         Para incorporar a alguien: pídele que se <strong>registre</strong> en esta misma página. Aparecerá aquí
         como miembro y podrás asignarle empresas o hacerle admin. Si alguien olvida su contraseña,
@@ -2155,13 +2155,7 @@ export default function App() {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
             <LogoIaeste />
-            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && !isSuper && <> · <span className="text-white/90">{miCentro}</span></>}</span>
-            {isSuper && centros.length > 0 && (
-              <select value={miCentro} onChange={(e) => cambiarCentro(e.target.value)} title="Centro que estás gestionando"
-                className="bg-white/10 text-white text-sm font-semibold rounded-full px-3 py-1 border border-white/20 focus:outline-none [&>option]:text-slate-900">
-                {centros.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
-              </select>
-            )}
+            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && <> · <span className="text-white/90">{miCentro}</span></>}</span>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-3">
             {(
