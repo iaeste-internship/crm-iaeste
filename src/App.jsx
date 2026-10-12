@@ -76,9 +76,11 @@ const ACCIONES = {
 }
 const accionDe = (id) => ACCIONES[id] || { label: id, color: 'bg-slate-100 text-slate-600 border-slate-200' }
 
-// Baremo de puntos del club: cada empresa vale según su estado ACTUAL (máximo 3 por empresa).
-// No se acumula: si una empresa cambia de estado, sus puntos pasan a ser los del estado nuevo.
-// Los puntos son para la persona que tiene asignada la empresa. Las notas y las altas no puntúan.
+// Baremo de puntos: cada empresa vale según su estado ACTUAL. No se acumula: si una empresa cambia
+// de estado, sus puntos pasan a ser los del estado nuevo. Los puntos son para la persona que tiene
+// asignada la empresa. Las notas y las altas no puntúan.
+// Cada centro puede tener su propio baremo (columna centros.puntos, se edita en Equipo); si no lo ha
+// cambiado, usa este por defecto.
 const PUNTOS_ESTADO = {
   sin_contactar: 0,
   no_contesta: 1, mail_enviado: 1, interesados: 1, segundo_plazo: 1,   // ya contactada
@@ -90,6 +92,28 @@ const claveSeg = (h) => `${h.empresa_id}|${h.usuario_id}|${h.creado}`
 
 const PUNTOS = {
   quincena: 10,       // seguimiento quincenal cumplido (ver QUINCENA); es aparte de las empresas
+}
+const PUNTOS_DEFECTO = { estados: PUNTOS_ESTADO, quincena: PUNTOS.quincena }
+// Estados que cuentan como «contactada» en los resúmenes; el resto con puntos cuentan como «cerrada»
+const CONTACTADAS = ['no_contesta', 'mail_enviado', 'interesados', 'segundo_plazo']
+// Baremo de un centro: el suyo guardado en la tabla centros, completado con el de por defecto
+const baremoDe = (centros = [], id) => {
+  const p = centros.find((c) => c.id === id)?.puntos || {}
+  return {
+    estados: { ...PUNTOS_DEFECTO.estados, ...(p.estados || {}) },
+    quincena: Number.isFinite(p.quincena) ? p.quincena : PUNTOS_DEFECTO.quincena,
+    propio: !!centros.find((c) => c.id === id)?.puntos,
+  }
+}
+// «sin contactar 0 · no lo cogen 1 · …» agrupando estados con los mismos puntos
+const textoBaremo = (b) => {
+  const porPts = {}
+  for (const e of ESTADOS) {
+    if (e.oculto) continue
+    ;(porPts[b.estados[e.id] ?? 0] ||= []).push(e.label.toLowerCase())
+  }
+  return Object.entries(porPts).sort((x, y) => x[0] - y[0])
+    .map(([pts, ls]) => `${ls.join(', ')}: ${pts} punto${Number(pts) !== 1 ? 's' : ''}`).join(' · ')
 }
 // ---------- Seguimiento quincenal ----------
 // Cada 14 días, contados desde QUINCENA.inicio (iguales para todo el equipo), se revisa a cada
@@ -1222,7 +1246,7 @@ function GraficaEmpresas({ users, companies }) {
 // llegó a ese estado (último cambio de estado del historial). Si no hay registro de cuándo,
 // solo cuenta en periodos que empiezan a inicio de curso o antes.
 // Además, las quincenas cerradas dentro del periodo suman PUNTOS.quincena si se cumplieron.
-function calcularPuntos({ todo, companies, users, desde, hasta }) {
+function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO }) {
   const ini = new Date(desde + 'T00:00:00')
   const fin = new Date(diaMas(hasta, 1) + 'T00:00:00')
   const nombreDeUsuario = (id) => users.find((u) => u.id === id)?.nombre || '—'
@@ -1238,7 +1262,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta }) {
   const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, puntos: 0, filas: [] })
 
   for (const c of companies) {
-    const pts = PUNTOS_ESTADO[c.estado] ?? 0
+    const pts = baremo.estados[c.estado] ?? 0
     if (!c.responsable || !pts) continue
     const l = llegada[c.id]
     const cuando = l && l.estado_nuevo === c.estado ? l.creado : null
@@ -1246,19 +1270,20 @@ function calcularPuntos({ todo, companies, users, desde, hasta }) {
     if (!dentro) continue
     const r = de(c.responsable)
     r.puntos += pts
-    if (pts >= 3) r.cerradas++; else r.contactadas++
+    if (CONTACTADAS.includes(c.estado)) r.contactadas++; else r.cerradas++
     if (c.estado === 'beca') r.becas++
     r.filas.push({ id: `e-${c.id}`, tipo: 'empresa', empresa_nombre: c.nombre, estado: c.estado, creado: cuando, puntos: pts })
   }
 
-  for (const [uid, qs] of Object.entries(evaluarQuincenas(todo, companies, hasta))) {
+  // Si el centro ha puesto la quincena a 0, no hay bonus de quincena
+  for (const [uid, qs] of Object.entries(baremo.quincena ? evaluarQuincenas(todo, companies, hasta) : {})) {
     for (const q of qs) {
       const ultimo = diaMas(q.fin, -1)
       if (q.enCurso || ultimo < desde || ultimo > hasta) continue
       const r = de(uid)
-      if (q.cumple) { r.quincenas++; r.puntos += PUNTOS.quincena }
+      if (q.cumple) { r.quincenas++; r.puntos += baremo.quincena }
       r.filas.push({
-        id: `q-${uid}-${q.ini}`, tipo: 'quincena', creado: q.fin + 'T00:00:00', puntos: q.cumple ? PUNTOS.quincena : 0,
+        id: `q-${uid}-${q.ini}`, tipo: 'quincena', creado: q.fin + 'T00:00:00', puntos: q.cumple ? baremo.quincena : 0,
         empresa_nombre: `Quincena ${fechaCorta(q.ini)} – ${fechaCorta(ultimo)}`,
         detalle: q.cumple ? `${q.hechas}/${q.total} empresas seguidas` : `${q.hechas}/${q.total} · faltó: ${q.faltan.map((c) => c.nombre).filter(Boolean).join(', ')}`,
       })
@@ -1274,7 +1299,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta }) {
 }
 
 // ---------- Actividad y puntos del equipo (a partir del historial) ----------
-function Actividad({ users, companies }) {
+function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
   const [desde, setDesde] = useState(INICIO_CURSO())
   const [hasta, setHasta] = useState(HOY())
   const [todo, setTodo] = useState(null) // historial completo hasta «hasta» (hace falta el anterior para las quincenas)
@@ -1341,7 +1366,7 @@ function Actividad({ users, companies }) {
     }
   }
 
-  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta })
+  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo })
 
   const exportar = () => {
     const cab = ['Persona', 'Empresas contactadas (1 pt)', 'Empresas cerradas (3 pts)', 'Becas', 'Quincenas cumplidas', 'Puntos']
@@ -1479,19 +1504,20 @@ function Actividad({ users, companies }) {
       )}
 
       <p className="text-xs text-slate-400 mt-4 leading-relaxed">
-        Baremo actual (por empresa, según su estado actual y para quien la tiene asignada; máximo 3 por empresa):
-        sin contactar 0 · no lo cogen, mail enviado o muy interesados 1 · para más adelante, otra comunidad, ya no existe,
-        no quieren o beca conseguida 3. Si una empresa vuelve a un estado anterior, sus puntos bajan. Las notas y las altas no puntúan.
-        Aparte, quincena de seguimiento cumplida {PUNTOS.quincena} (cada {QUINCENA.dias} días desde el {fechaCorta(QUINCENA.inicio)}:
-        haber escrito una nota o cambiado el estado de todas tus empresas en seguimiento; se suma al cerrar la quincena).
-        Se cambia en <code>PUNTOS_ESTADO</code> al principio de App.jsx. Haz clic en una persona para ver el desglose.
+        Baremo de este centro (por empresa, según su estado actual y para quien la tiene asignada): {textoBaremo(baremo)}.
+        Si una empresa vuelve a un estado anterior, sus puntos bajan. Las notas y las altas no puntúan.
+        {baremo.quincena > 0
+          ? <> Aparte, quincena de seguimiento cumplida +{baremo.quincena} (cada {QUINCENA.dias} días desde el {fechaCorta(QUINCENA.inicio)}:
+            haber escrito una nota o cambiado el estado de todas tus empresas en seguimiento; se suma al cerrar la quincena).</>
+          : <> Este centro no da puntos por la quincena de seguimiento.</>}
+        {' '}Se cambia en «Sistema de puntos», más abajo. Haz clic en una persona para ver el desglose.
       </p>
     </div>
   )
 }
 // ---------- Ranking (visible para todo el equipo) ----------
 const INICIO_MES = () => { const d = new Date(); return isoDia(new Date(d.getFullYear(), d.getMonth(), 1)) }
-function Ranking({ users, me, centroNombre }) {
+function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO }) {
   const [periodo, setPeriodo] = useState('mes')
   const [datos, setDatos] = useState(null)
   const [err, setErr] = useState('')
@@ -1507,7 +1533,7 @@ function Ranking({ users, me, centroNombre }) {
   }, [hasta])
 
   const lista = datos
-    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta })
+    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo })
       .lista.filter((d) => users.some((u) => u.id === d.id))
     : []
   // Misma puntuación = mismo puesto
@@ -1561,16 +1587,84 @@ function Ranking({ users, me, centroNombre }) {
         })}
       </div>
       <p className="text-xs text-slate-500 px-1">
-        Cada empresa que llevas puntúa según su estado actual: contactada (no lo cogen, mail enviado, muy interesados) 1 punto;
-        cerrada (para más adelante, otra comunidad, ya no existe, no quieren o beca conseguida) 3 puntos en total. Máximo 3 por empresa.
-        Quincena de seguimiento cumplida: +{PUNTOS.quincena}.
+        Cada empresa que llevas puntúa según su estado actual: {textoBaremo(baremo)}.
+        {baremo.quincena > 0 && <> Quincena de seguimiento cumplida: +{baremo.quincena}.</>}
       </p>
     </div>
   )
 }
 
+// ---------- Sistema de puntos del centro (admin de centro o admin general) ----------
+function BaremoPuntos({ centro, baremo, onChanged }) {
+  const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena })
+  const [f, setF] = useState(inicial)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const clave = JSON.stringify([centro, baremo.estados, baremo.quincena])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setF(inicial()); setMsg(''); setErr('') }, [clave])
+  const num = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0))
+  const cambiado = JSON.stringify([f.estados, f.quincena]) !== JSON.stringify([baremo.estados, baremo.quincena])
+
+  const guardar = async (valor) => {
+    setBusy(true); setErr(''); setMsg('')
+    const { error } = await supabase.rpc('guardar_puntos_centro', { p_centro: centro, p_puntos: valor })
+    setBusy(false)
+    if (error) {
+      setErr(/function|schema cache/i.test(error.message)
+        ? 'Falta ejecutar migracion_puntos_por_centro.sql en Supabase.'
+        : error.message)
+      return
+    }
+    setMsg(valor ? 'Sistema de puntos guardado ✓' : 'Vuelve a usar el baremo por defecto ✓')
+    onChanged()
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] p-5">
+      <h3 className="font-bold text-slate-900 flex items-center gap-2"><Trophy className="w-4 h-4 text-amber-500" />Sistema de puntos de {centro}</h3>
+      <p className="text-xs text-slate-500 mt-1">
+        Puntos que vale cada empresa según su estado actual, para quien la tiene asignada. Solo afecta a {centro}: cada centro tiene el suyo.
+        {!baremo.propio && ' Ahora mismo usa el baremo por defecto.'}
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 mt-4">
+        {ESTADOS.filter((e) => !e.oculto).map((e) => (
+          <label key={e.id} className="flex items-center justify-between gap-3 text-sm">
+            <span className={`px-2 py-0.5 rounded border text-xs font-medium ${e.color}`}>{e.label}</span>
+            <input type="number" min="0" max="100" value={f.estados[e.id] ?? 0}
+              onChange={(ev) => setF((p) => ({ ...p, estados: { ...p.estados, [e.id]: num(ev.target.value) } }))}
+              className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
+          </label>
+        ))}
+        <label className="flex items-center justify-between gap-3 text-sm sm:col-span-2 border-t border-slate-100 pt-3 mt-1">
+          <span className="text-slate-700">Quincena de seguimiento cumplida <span className="text-slate-400">(0 = sin bonus)</span></span>
+          <input type="number" min="0" max="100" value={f.quincena}
+            onChange={(ev) => setF((p) => ({ ...p, quincena: num(ev.target.value) }))}
+            className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
+        </label>
+      </div>
+      {err && <p className="text-sm text-rose-600 mt-3">{err}</p>}
+      {msg && <p className="text-sm text-emerald-700 mt-3">{msg}</p>}
+      <div className="flex flex-wrap gap-2 mt-4">
+        <button onClick={() => guardar({ estados: f.estados, quincena: f.quincena })} disabled={busy || !cambiado}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#0e2d4d] text-white text-sm font-semibold disabled:opacity-40">
+          <Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}
+        </button>
+        {baremo.propio && (
+          <button onClick={() => confirm(`¿Volver al baremo por defecto en ${centro}?`) && guardar(null)} disabled={busy}
+            className="px-4 py-2 rounded-full border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            Volver al de por defecto
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-slate-400 mt-3">Al cambiarlo se recalculan los puntos de todo el periodo con el baremo nuevo.</p>
+    </div>
+  )
+}
+
 // ---------- Equipo (solo admin) ----------
-function Equipo({ users, centro, isSuper, centros = [], companies, me, onChanged }) {
+function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = PUNTOS_DEFECTO, onChanged }) {
   const [err, setErr] = useState('')
   const [asignando, setAsignando] = useState('')
   const cuenta = (id) => companies.filter((c) => c.responsable === id).length
@@ -1664,7 +1758,9 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, onChanged
 
       <GraficaEmpresas users={users} companies={deMiCentro} />
 
-      <Actividad users={users} companies={companies} />
+      <Actividad users={users} companies={companies} baremo={baremo} />
+
+      {centros.length > 0 && <BaremoPuntos centro={miCentro} baremo={baremo} onChanged={onChanged} />}
 
       <p className="text-xs text-slate-500 px-1">
         Bote común (compartido con todos los centros): <strong>{libres.length}</strong> empresas sin asignar en estado «Sin contactar» (sin contar las históricas, que se asignan a mano desde su ficha).
@@ -1752,7 +1848,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, onChanged
 }
 
 // ---------- Aviso de la quincena en curso (para cada persona) ----------
-function MiQuincena({ me, companies, onAbrir }) {
+function MiQuincena({ me, companies, onAbrir, puntos = PUNTOS.quincena }) {
   const mias = companies.filter((c) => c.responsable === me.id)
   const clave = mias.map((c) => `${c.id}:${c.estado}:${c.actualizado || ''}`).join('|')
   const [q, setQ] = useState(null)
@@ -1780,7 +1876,7 @@ function MiQuincena({ me, companies, onAbrir }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.id, clave])
 
-  if (!q || q.total === 0) return null
+  if (!q || q.total === 0 || !puntos) return null
   const ultimo = diaMas(q.fin, -1)
   const dia = new Date(ultimo + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' })
   return q.cumple ? (
@@ -1788,7 +1884,7 @@ function MiQuincena({ me, companies, onAbrir }) {
       <Trophy className="w-4 h-4 mt-0.5 shrink-0" />
       <p>
         <strong>Seguimiento de la quincena hecho</strong> ({q.hechas}/{q.total} empresas).
-        Los +{PUNTOS.quincena} puntos se suman al cerrar la quincena, el {dia}.
+        Los +{puntos} puntos se suman al cerrar la quincena, el {dia}.
       </p>
     </div>
   ) : (
@@ -1797,7 +1893,7 @@ function MiQuincena({ me, companies, onAbrir }) {
       <div>
         <p>
           <strong>Seguimiento quincenal: {q.hechas}/{q.total}.</strong>{' '}
-          Vuelve a llamar (y apúntalo con una nota o un cambio de estado) a estas empresas antes del final del {dia} y te llevas +{PUNTOS.quincena}:
+          Vuelve a llamar (y apúntalo con una nota o un cambio de estado) a estas empresas antes del final del {dia} y te llevas +{puntos}:
         </p>
         <div className="flex flex-wrap gap-1.5 mt-2">
           {q.faltan.map((c) => (
@@ -2095,6 +2191,7 @@ export default function App() {
   // Centro activo: el propio; un admin general puede cambiarlo y entonces todo se ve de ese centro
   const miCentro = (isSuper && centroSel && centros.some((c) => c.id === centroSel)) ? centroSel : (me.centro || 'TLMA')
   const centroNombre = (id) => centros.find((c) => c.id === id)?.nombre || id
+  const baremo = baremoDe(centros, miCentro)
   // Los miembros solo ven su centro; las pestañas de otros centros y del bote son solo para admins
   const vistaEf = isAdmin && vista && (vista === BOTE || centros.some((c) => c.id === vista)) ? vista : miCentro
   const enBote = vistaEf === BOTE
@@ -2200,11 +2297,11 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 'ranking' ? (
-          <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} />
+          <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} />
         ) : tab === 'seguimiento' && isAdmin ? (
           <Seguimiento users={usersCentro} companies={companies} version={claveEmpresas} onAbrir={setModal} />
         ) : tab === 'equipo' && isAdmin ? (
-          <Equipo users={usersCentro} centro={miCentro} isSuper={isSuper} centros={centros} companies={companies} me={me} onChanged={cargar} />
+          <Equipo users={usersCentro} centro={miCentro} isSuper={isSuper} centros={centros} companies={companies} me={me} baremo={baremo} onChanged={cargar} />
         ) : (
           <>
             {isAdmin && centros.length > 0 && (
@@ -2255,7 +2352,7 @@ export default function App() {
                 <p>Te quedan <strong>{misSinContactar}</strong> empresas sin contactar. Ve pidiendo el siguiente lote.</p>
               </div>
             )}
-            {agendaVisible && <MiQuincena me={me} companies={companies} onAbrir={setModal} />}
+            {agendaVisible && <MiQuincena me={me} companies={companies} onAbrir={setModal} puntos={baremo.quincena} />}
             {agendaVisible && (nHoy + nAtrasadas + nSinMover) > 0 && (
               <div className="flex flex-wrap gap-2 mb-4">
                 {nSinMover > 0 && (
