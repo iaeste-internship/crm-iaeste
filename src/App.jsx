@@ -1750,7 +1750,7 @@ function Reuniones({ me, users, centro, puedeGestionar, baremo = PUNTOS_DEFECTO 
                     <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
                       <ChevronRight className={`w-3.5 h-3.5 text-slate-300 transition-transform ${abiertaR ? 'rotate-90' : ''}`} />
                       {r.titulo}
-                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${r.abierta ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                      <span className={`shrink-0 whitespace-nowrap text-xs font-medium px-1.5 py-0.5 rounded border ${r.abierta ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
                         {r.abierta ? 'Lista abierta' : 'Cerrada'}
                       </span>
                     </p>
@@ -2525,52 +2525,57 @@ export default function App() {
         .some((v) => (v || '').toLowerCase().includes(q)) || (qCif.length >= 4 && cifNorm(c.cif).includes(qCif))
     })
 
+  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
+    <button
+      key={id}
+      onClick={() => setTab(id)}
+      className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${tab === id ? 'bg-white text-[#0e2d4d]' : 'text-white/80 hover:text-[#e2e8f0] hover:bg-white/[0.08]'}`}
+    >
+      {label}
+    </button>
+  ))
+
   return (
     <div className="min-h-screen bg-[#f4f6fa]">
       <header className="bg-[#0d2b45] text-white sticky top-0 z-40 shadow-[0_2px_12px_rgba(13,43,69,0.25)]">
-        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <LogoIaeste />
-            <span className="hidden sm:inline text-sm text-white/60 font-medium border-l border-white/20 pl-2.5">Madrid · CRM{centros.length > 0 && <> · <span className="text-white/90">{miCentro}</span></>}</span>
-          </div>
-          <div className="flex items-center gap-1.5 sm:gap-3">
-            {(
-              <nav className="flex gap-0.5 sm:gap-1">
-                {[['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
-                  <button
-                    key={id}
-                    onClick={() => setTab(id)}
-                    className={`px-2.5 sm:px-3 py-1.5 rounded-full text-xs sm:text-sm font-semibold transition-colors ${tab === id ? 'bg-white text-[#0e2d4d]' : 'text-white/80 hover:text-[#e2e8f0] hover:bg-white/[0.08]'}`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </nav>
-            )}
-            <div className="flex items-center gap-2 text-sm text-white/80">
-              <span className="hidden sm:flex items-center gap-1.5">
-                {isAdmin && <Shield className="w-3.5 h-3.5 text-white/70" />}
-                {me.nombre}
+        {/* En el móvil las pestañas van en una segunda fila que se desliza; en pantallas grandes, todo en una */}
+        <div className="max-w-5xl mx-auto px-4">
+          <div className="h-14 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <LogoIaeste />
+              <span className="text-sm text-white/60 font-medium border-l border-white/20 pl-2.5 truncate">
+                <span className="hidden sm:inline lg:hidden">Madrid · CRM</span>
+                {centros.length > 0 && <><span className="hidden sm:inline lg:hidden"> · </span><span className="text-white/90">{miCentro}</span></>}
               </span>
-              <div className="hidden sm:flex w-8 h-8 rounded-full bg-white text-[#0d2b45] font-bold text-sm items-center justify-center" title={me.nombre}>
-                {(me.nombre || '?').trim().charAt(0).toUpperCase()}
+            </div>
+            <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
+              <nav className="hidden lg:flex gap-1">{pestanas}</nav>
+              <div className="flex items-center gap-1 sm:gap-2 text-sm text-white/80 shrink-0">
+                <span className="hidden sm:flex items-center gap-1.5">
+                  {isAdmin && <Shield className="w-3.5 h-3.5 text-white/70" />}
+                  {me.nombre}
+                </span>
+                <div className="hidden sm:flex w-8 h-8 rounded-full bg-white text-[#0d2b45] font-bold text-sm items-center justify-center" title={me.nombre}>
+                  {(me.nombre || '?').trim().charAt(0).toUpperCase()}
+                </div>
+                <button
+                  onClick={() => setCambiarPass('normal')}
+                  title="Cambiar mi contraseña"
+                  className="p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white"
+                >
+                  <KeyRound className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={() => supabase.auth.signOut()}
+                  title="Salir"
+                  className="p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white"
+                >
+                  <LogOut className="w-4 h-4" />
+                </button>
               </div>
-              <button
-                onClick={() => setCambiarPass('normal')}
-                title="Cambiar mi contraseña"
-                className="p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white"
-              >
-                <KeyRound className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => supabase.auth.signOut()}
-                title="Salir"
-                className="p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
             </div>
           </div>
+          <nav className="lg:hidden flex gap-1 overflow-x-auto pb-2.5 -mx-4 px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{pestanas}</nav>
         </div>
       </header>
 
