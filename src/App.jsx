@@ -3,7 +3,7 @@ import { supabase } from './supabase'
 import {
   Building2, Plus, Search, LogOut, Pencil, Trash2, X, ChevronRight,
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
-  History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle,
+  History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -92,8 +92,9 @@ const claveSeg = (h) => `${h.empresa_id}|${h.usuario_id}|${h.creado}`
 
 const PUNTOS = {
   quincena: 10,       // seguimiento quincenal cumplido (ver QUINCENA); es aparte de las empresas
+  reunion: 5,         // asistencia a una reunión (cada reunión puede tener otro valor)
 }
-const PUNTOS_DEFECTO = { estados: PUNTOS_ESTADO, quincena: PUNTOS.quincena }
+const PUNTOS_DEFECTO = { estados: PUNTOS_ESTADO, quincena: PUNTOS.quincena, reunion: PUNTOS.reunion }
 // Estados que cuentan como «contactada» en los resúmenes; el resto con puntos cuentan como «cerrada»
 const CONTACTADAS = ['no_contesta', 'mail_enviado', 'interesados', 'segundo_plazo']
 // Baremo de un centro: el suyo guardado en la tabla centros, completado con el de por defecto
@@ -102,6 +103,7 @@ const baremoDe = (centros = [], id) => {
   return {
     estados: { ...PUNTOS_DEFECTO.estados, ...(p.estados || {}) },
     quincena: Number.isFinite(p.quincena) ? p.quincena : PUNTOS_DEFECTO.quincena,
+    reunion: Number.isFinite(p.reunion) ? p.reunion : PUNTOS_DEFECTO.reunion,
     propio: !!centros.find((c) => c.id === id)?.puntos,
   }
 }
@@ -190,6 +192,24 @@ function evaluarQuincenas(hist, companies, hastaIso) {
     }
   }
   return res
+}
+
+// Asistencias a reuniones de un centro, para los puntos: [{ usuario_id, titulo, fecha, puntos }].
+// Si aún no se ha ejecutado migracion_reuniones.sql, devuelve [] y todo funciona como antes.
+async function traerAsistencias(centro) {
+  if (!centro) return []
+  const { data: rs, error } = await supabase.from('reuniones').select('id, titulo, fecha, puntos').eq('centro', centro)
+  if (error || !rs?.length) return []
+  const porId = Object.fromEntries(rs.map((r) => [r.id, r]))
+  const out = []
+  for (let i = 0; i < rs.length; i += 100) {
+    const { data } = await supabase.from('asistencias').select('reunion_id, usuario_id').in('reunion_id', rs.slice(i, i + 100).map((r) => r.id))
+    for (const a of data || []) {
+      const r = porId[a.reunion_id]
+      out.push({ usuario_id: a.usuario_id, reunion_id: r.id, titulo: r.titulo, fecha: r.fecha, puntos: r.puntos })
+    }
+  }
+  return out
 }
 
 // Supabase corta cada consulta en 1000 filas aunque pidas más: esto pagina hasta traerlo todo.
@@ -404,6 +424,7 @@ const errorAuth = (e) => {
   const code = e?.code || ''
   if (code === 'invalid_credentials' || m === 'Invalid login credentials') return 'Email o contraseña incorrectos.'
   if (code === 'email_not_confirmed' || /email not confirmed/i.test(m)) return 'NO_CONFIRMADO'
+  if (code === 'user_already_exists' || /already registered/i.test(m)) return 'Ya hay una cuenta con ese email (el nombre da igual). Entra con «Iniciar sesión»; si no recuerdas la contraseña, usa «¿Has olvidado tu contraseña?» o pídesela a un admin.'
   if (e?.status === 429 || /rate limit|security purposes/i.test(m)) return 'Demasiados intentos seguidos. Espera unos minutos y vuelve a probar.'
   if (code === 'weak_password' || /password/i.test(m) && /weak|short|characters/i.test(m)) return `Contraseña demasiado débil: mínimo ${PASS_MIN} caracteres, con letras y números.`
   if (code === 'same_password') return 'La contraseña nueva tiene que ser distinta de la anterior.'
@@ -1246,7 +1267,7 @@ function GraficaEmpresas({ users, companies }) {
 // llegó a ese estado (último cambio de estado del historial). Si no hay registro de cuándo,
 // solo cuenta en periodos que empiezan a inicio de curso o antes.
 // Además, las quincenas cerradas dentro del periodo suman PUNTOS.quincena si se cumplieron.
-function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO }) {
+function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO, asistencias = [] }) {
   const ini = new Date(desde + 'T00:00:00')
   const fin = new Date(diaMas(hasta, 1) + 'T00:00:00')
   const nombreDeUsuario = (id) => users.find((u) => u.id === id)?.nombre || '—'
@@ -1259,7 +1280,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
   }
 
   const resumen = {}
-  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, puntos: 0, filas: [] })
+  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, reuniones: 0, puntos: 0, filas: [] })
 
   for (const c of companies) {
     const pts = baremo.estados[c.estado] ?? 0
@@ -1290,6 +1311,15 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
     }
   }
 
+  // Reuniones: cuentan el día de la reunión
+  for (const a of asistencias) {
+    if (a.fecha < desde || a.fecha > hasta) continue
+    const r = de(a.usuario_id)
+    r.reuniones++
+    r.puntos += a.puntos || 0
+    r.filas.push({ id: `r-${a.reunion_id}-${a.usuario_id}`, tipo: 'reunion', empresa_nombre: a.titulo, creado: a.fecha + 'T12:00:00', puntos: a.puntos || 0 })
+  }
+
   users.forEach((u) => de(u.id))
   for (const r of Object.values(resumen)) r.filas.sort((a, b) => new Date(b.creado || 0) - new Date(a.creado || 0))
   // Solo la gente que se ha pasado en «users» (la del centro): cada centro tiene sus propios puntos
@@ -1299,7 +1329,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
 }
 
 // ---------- Actividad y puntos del equipo (a partir del historial) ----------
-function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
+function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
   const [desde, setDesde] = useState(INICIO_CURSO())
   const [hasta, setHasta] = useState(HOY())
   const [todo, setTodo] = useState(null) // historial completo hasta «hasta» (hace falta el anterior para las quincenas)
@@ -1308,6 +1338,8 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
   const [abierto, setAbierto] = useState('')
   const [recarga, setRecarga] = useState(0)
   const [limpiando, setLimpiando] = useState(false)
+  const [asistencias, setAsistencias] = useState([])
+  useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro, recarga])
 
   useEffect(() => {
     setTodo(null); setErr('')
@@ -1366,11 +1398,11 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
     }
   }
 
-  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo })
+  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo, asistencias })
 
   const exportar = () => {
-    const cab = ['Persona', 'Empresas contactadas (1 pt)', 'Empresas cerradas (3 pts)', 'Becas', 'Quincenas cumplidas', 'Puntos']
-    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.puntos])]
+    const cab = ['Persona', 'Empresas contactadas', 'Empresas cerradas', 'Becas', 'Quincenas cumplidas', 'Reuniones', 'Puntos']
+    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.reuniones, d.puntos])]
       .map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';'))
       .join('\n')
     const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }))
@@ -1446,10 +1478,11 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
             <thead>
               <tr className="text-xs text-slate-400 uppercase tracking-wide text-right">
                 <th className="text-left font-medium pb-2">Persona</th>
-                <th className="font-medium pb-2" title="Empresas contactadas (1 punto)">Contact.</th>
-                <th className="font-medium pb-2" title="Empresas cerradas: más adelante, otra comunidad, ya no existe, no quieren o beca (3 puntos)">Cerradas</th>
+                <th className="font-medium pb-2" title="Empresas contactadas: no lo cogen, mail enviado o muy interesados">Contact.</th>
+                <th className="font-medium pb-2" title="Empresas cerradas: más adelante, otra comunidad, ya no existe, no quieren o beca">Cerradas</th>
                 <th className="font-medium pb-2">Becas</th>
                 <th className="font-medium pb-2" title="Quincenas de seguimiento cumplidas">Quinc.</th>
+                <th className="font-medium pb-2" title="Reuniones a las que ha ido">Reun.</th>
                 <th className="font-medium pb-2 pl-3">Puntos</th>
               </tr>
             </thead>
@@ -1468,11 +1501,12 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
                     <td className="text-slate-500">{d.cerradas}</td>
                     <td className={d.becas ? 'text-emerald-700 font-semibold' : 'text-slate-300'}>{d.becas}</td>
                     <td className={d.quincenas ? 'text-indigo-700 font-semibold' : 'text-slate-300'}>{d.quincenas}</td>
+                    <td className={d.reuniones ? 'text-teal-700 font-semibold' : 'text-slate-300'}>{d.reuniones}</td>
                     <td className="font-bold text-slate-900 pl-3">{d.puntos}</td>
                   </tr>
                   {abierto === d.id && (
                     <tr>
-                      <td colSpan={6} className="bg-slate-50 px-3 py-3">
+                      <td colSpan={7} className="bg-slate-50 px-3 py-3">
                         {d.filas.length === 0 ? (
                           <p className="text-xs text-slate-400">Sin puntos en este periodo.</p>
                         ) : (
@@ -1481,7 +1515,9 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
                               <li key={h.id} className="flex items-center gap-2 text-xs">
                                 {h.tipo === 'empresa'
                                   ? <Badge estadoId={h.estado} />
-                                  : <span className={`shrink-0 px-1.5 py-0.5 rounded border font-medium ${accionDe('quincena').color}`}>Quincena</span>}
+                                  : h.tipo === 'reunion'
+                                    ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-teal-50 text-teal-700 border-teal-200">Reunión</span>
+                                    : <span className={`shrink-0 px-1.5 py-0.5 rounded border font-medium ${accionDe('quincena').color}`}>Quincena</span>}
                                 <span className="flex-1 min-w-0 text-slate-600 truncate">
                                   <strong className="text-slate-800">{h.empresa_nombre}</strong>{h.detalle ? ` · ${h.detalle}` : ''}
                                 </span>
@@ -1510,6 +1546,7 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
           ? <> Aparte, quincena de seguimiento cumplida +{baremo.quincena} (cada {QUINCENA.dias} días desde el {fechaCorta(QUINCENA.inicio)}:
             haber escrito una nota o cambiado el estado de todas tus empresas en seguimiento; se suma al cerrar la quincena).</>
           : <> Este centro no da puntos por la quincena de seguimiento.</>}
+        {' '}Cada reunión a la que se va suma sus puntos (por defecto {baremo.reunion}), el día de la reunión.
         {' '}Se cambia en «Sistema de puntos», más abajo. Haz clic en una persona para ver el desglose.
       </p>
     </div>
@@ -1517,12 +1554,15 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO }) {
 }
 // ---------- Ranking (visible para todo el equipo) ----------
 const INICIO_MES = () => { const d = new Date(); return isoDia(new Date(d.getFullYear(), d.getMonth(), 1)) }
-function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO }) {
+function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
   const [periodo, setPeriodo] = useState('mes')
   const [datos, setDatos] = useState(null)
   const [err, setErr] = useState('')
   const hasta = HOY()
   const desde = periodo === 'mes' ? INICIO_MES() : periodo === '7' ? sumarDias(-7) : INICIO_CURSO()
+
+  const [asistencias, setAsistencias] = useState([])
+  useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro])
 
   useEffect(() => {
     setDatos(null); setErr('')
@@ -1533,7 +1573,7 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO }) {
   }, [hasta])
 
   const lista = datos
-    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo })
+    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo, asistencias })
       .lista.filter((d) => users.some((u) => u.id === d.id))
     : []
   // Misma puntuación = mismo puesto
@@ -1589,23 +1629,236 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO }) {
       <p className="text-xs text-slate-500 px-1">
         Cada empresa que llevas puntúa según su estado actual: {textoBaremo(baremo)}.
         {baremo.quincena > 0 && <> Quincena de seguimiento cumplida: +{baremo.quincena}.</>}
+        {' '}Cada reunión a la que vas suma sus puntos (normalmente +{baremo.reunion}).
       </p>
+    </div>
+  )
+}
+
+// ---------- Reuniones: la secretaría crea la reunión y abre la lista; cada persona dice «He ido» ----------
+// Mientras la lista está abierta cualquiera del centro puede apuntarse (y quitarse). La secretaría
+// (o un admin) revisa la lista, quita a quien no estuvo o apunta a quien se olvidó, y la cierra.
+// Cada asistencia suma los puntos de esa reunión en el ranking, el día de la reunión.
+async function marcarAsistencia(reunionId, usuarioId, meId) {
+  return supabase.from('asistencias').insert({ reunion_id: reunionId, usuario_id: usuarioId, marcado_por: meId })
+}
+async function quitarAsistencia(reunionId, usuarioId) {
+  return supabase.from('asistencias').delete().eq('reunion_id', reunionId).eq('usuario_id', usuarioId)
+}
+const fechaLarga = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
+
+function Reuniones({ me, users, centro, puedeGestionar, baremo = PUNTOS_DEFECTO }) {
+  const [lista, setLista] = useState(null)
+  const [asis, setAsis] = useState([])
+  const [err, setErr] = useState('')
+  const [abierta, setAbierta] = useState('')
+  const [nueva, setNueva] = useState({ titulo: 'Reunión', fecha: HOY(), puntos: baremo.reunion })
+  const [busy, setBusy] = useState(false)
+  const [anadir, setAnadir] = useState('')
+  const [recarga, setRecarga] = useState(0)
+  const recargar = () => setRecarga((r) => r + 1)
+
+  useEffect(() => { setNueva((n) => ({ ...n, puntos: baremo.reunion })) }, [baremo.reunion])
+  useEffect(() => {
+    let vivo = true
+    ;(async () => {
+      const { data: rs, error } = await supabase.from('reuniones').select('*').eq('centro', centro)
+        .order('fecha', { ascending: false }).order('creado', { ascending: false })
+      if (!vivo) return
+      if (error) {
+        setErr(/relation|schema cache|does not exist/i.test(error.message) ? 'Falta ejecutar migracion_reuniones.sql en Supabase.' : error.message)
+        setLista([]); return
+      }
+      const ids = (rs || []).map((r) => r.id)
+      let as = []
+      for (let i = 0; i < ids.length; i += 100) {
+        const { data } = await supabase.from('asistencias').select('reunion_id, usuario_id, creado').in('reunion_id', ids.slice(i, i + 100))
+        as = as.concat(data || [])
+      }
+      if (!vivo) return
+      setErr(''); setLista(rs || []); setAsis(as)
+    })()
+    return () => { vivo = false }
+  }, [centro, recarga])
+
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre || 'Alguien de otro centro'
+  const de = (rid) => asis.filter((a) => a.reunion_id === rid)
+  const fui = (rid) => asis.some((a) => a.reunion_id === rid && a.usuario_id === me.id)
+  const hacer = async (fn) => {
+    setBusy(true); setErr('')
+    const { error } = await fn()
+    setBusy(false)
+    if (error) setErr(error.code === '23505' ? 'Esa persona ya estaba en la lista.' : error.message)
+    recargar()
+  }
+
+  const crear = () => {
+    if (!nueva.titulo.trim()) { setErr('Ponle un título a la reunión.'); return }
+    hacer(() => supabase.from('reuniones').insert({
+      centro, titulo: nueva.titulo.trim().slice(0, 120), fecha: nueva.fecha || HOY(),
+      puntos: Math.max(0, Math.min(100, parseInt(nueva.puntos, 10) || 0)), creada_por: me.id,
+    }))
+    setNueva({ titulo: 'Reunión', fecha: HOY(), puntos: baremo.reunion })
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)]">
+        <h2 className="text-lg font-bold flex items-center gap-2"><CalendarCheck className="w-5 h-5 text-teal-300" />Reuniones · {centro}</h2>
+        <p className="mt-1 text-sm text-white/75">
+          {puedeGestionar
+            ? 'Crea la reunión y su lista queda abierta: cada persona pulsa «He ido». Al acabar, revisa la lista y ciérrala.'
+            : 'Si has ido a una reunión, pulsa «He ido» mientras la lista esté abierta. Cada reunión suma sus puntos en el ranking.'}
+        </p>
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+
+      {puedeGestionar && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-4 flex flex-wrap items-end gap-2">
+          <label className="flex-1 min-w-[10rem] text-xs text-slate-500">Título
+            <input value={nueva.titulo} onChange={(e) => setNueva({ ...nueva, titulo: e.target.value })}
+              className="mt-1 w-full px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-900" />
+          </label>
+          <label className="text-xs text-slate-500">Fecha
+            <input type="date" value={nueva.fecha} onChange={(e) => setNueva({ ...nueva, fecha: e.target.value })}
+              className="mt-1 block px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-900" />
+          </label>
+          <label className="text-xs text-slate-500">Puntos
+            <input type="number" min="0" max="100" value={nueva.puntos} onChange={(e) => setNueva({ ...nueva, puntos: e.target.value })}
+              className="mt-1 block w-20 px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-900 text-right" />
+          </label>
+          <button onClick={crear} disabled={busy}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#0e2d4d] text-white text-sm font-semibold disabled:opacity-40">
+            <Plus className="w-4 h-4" />Crear y abrir lista
+          </button>
+        </div>
+      )}
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] divide-y divide-slate-100">
+        {lista === null ? <p className="p-6 text-sm text-slate-400">Cargando…</p>
+          : lista.length === 0 ? <p className="p-6 text-sm text-slate-400">Todavía no hay reuniones.</p>
+          : lista.map((r) => {
+            const gente = de(r.id)
+            const yoFui = fui(r.id)
+            const abiertaR = abierta === r.id
+            const faltan = users.filter((u) => !gente.some((a) => a.usuario_id === u.id))
+            return (
+              <div key={r.id} className="px-5 py-4">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button onClick={() => setAbierta(abiertaR ? '' : r.id)} className="flex-1 min-w-0 text-left">
+                    <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5">
+                      <ChevronRight className={`w-3.5 h-3.5 text-slate-300 transition-transform ${abiertaR ? 'rotate-90' : ''}`} />
+                      {r.titulo}
+                      <span className={`text-xs font-medium px-1.5 py-0.5 rounded border ${r.abierta ? 'bg-teal-50 text-teal-700 border-teal-200' : 'bg-slate-100 text-slate-500 border-slate-200'}`}>
+                        {r.abierta ? 'Lista abierta' : 'Cerrada'}
+                      </span>
+                    </p>
+                    <p className="text-xs text-slate-500 ml-5">{fechaLarga(r.fecha)} · +{r.puntos} punto{r.puntos !== 1 ? 's' : ''} · {gente.length} asistente{gente.length !== 1 ? 's' : ''}</p>
+                  </button>
+                  {r.abierta && !yoFui && (
+                    <button onClick={() => hacer(() => marcarAsistencia(r.id, me.id, me.id))} disabled={busy}
+                      className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700 disabled:opacity-40">
+                      <Check className="w-4 h-4" />He ido
+                    </button>
+                  )}
+                  {yoFui && (
+                    <span className="inline-flex items-center gap-1 text-sm text-teal-700 font-medium">
+                      <Check className="w-4 h-4" />Has ido
+                      {r.abierta && <button onClick={() => hacer(() => quitarAsistencia(r.id, me.id))} disabled={busy} className="ml-1 text-xs text-slate-400 hover:text-rose-600 underline">quitar</button>}
+                    </span>
+                  )}
+                </div>
+
+                {abiertaR && (
+                  <div className="mt-3 ml-5 space-y-2">
+                    {gente.length === 0 ? <p className="text-xs text-slate-400">Nadie apuntado todavía.</p> : (
+                      <ul className="flex flex-wrap gap-1.5">
+                        {gente.map((a) => (
+                          <li key={a.usuario_id} className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-100 text-xs text-slate-700">
+                            {nombre(a.usuario_id)}
+                            {puedeGestionar && (
+                              <button onClick={() => hacer(() => quitarAsistencia(r.id, a.usuario_id))} disabled={busy} title="Quitar de la lista" className="text-slate-400 hover:text-rose-600">
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {puedeGestionar && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <select value={anadir} onChange={(e) => setAnadir(e.target.value)} className="px-2 py-1.5 rounded-lg border border-slate-300 text-xs bg-white">
+                          <option value="">Apuntar a alguien…</option>
+                          {faltan.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                        </select>
+                        <button onClick={() => { if (anadir) { hacer(() => marcarAsistencia(r.id, anadir, me.id)); setAnadir('') } }} disabled={busy || !anadir}
+                          className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-40">Apuntar</button>
+                        <span className="flex-1" />
+                        <button onClick={() => hacer(() => supabase.from('reuniones').update({ abierta: !r.abierta }).eq('id', r.id))} disabled={busy}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+                          {r.abierta ? <><Lock className="w-3.5 h-3.5" />Cerrar lista</> : <><LockOpen className="w-3.5 h-3.5" />Reabrir lista</>}
+                        </button>
+                        <button onClick={() => confirm(`¿Borrar «${r.titulo}»? Se quitan también sus asistencias y sus puntos.`) && hacer(() => supabase.from('reuniones').delete().eq('id', r.id))} disabled={busy}
+                          title="Borrar reunión" className="p-1.5 rounded-lg border border-slate-300 text-slate-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-40">
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+      </div>
+    </div>
+  )
+}
+
+// Aviso en Empresas: hay una reunión con la lista abierta y aún no has dicho que has ido
+function AvisoReunion({ me, centro, onVer }) {
+  const [pendientes, setPendientes] = useState([])
+  const [recarga, setRecarga] = useState(0)
+  useEffect(() => {
+    let vivo = true
+    ;(async () => {
+      const { data: rs, error } = await supabase.from('reuniones').select('id, titulo, fecha, puntos').eq('centro', centro).eq('abierta', true)
+      if (error || !rs?.length) { vivo && setPendientes([]); return }
+      const { data: mias } = await supabase.from('asistencias').select('reunion_id').eq('usuario_id', me.id).in('reunion_id', rs.map((r) => r.id))
+      const ya = new Set((mias || []).map((a) => a.reunion_id))
+      vivo && setPendientes(rs.filter((r) => !ya.has(r.id)))
+    })()
+    return () => { vivo = false }
+  }, [me.id, centro, recarga])
+  if (!pendientes.length) return null
+  const r = pendientes[0]
+  return (
+    <div className="flex items-center gap-2.5 mb-4 rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-900 flex-wrap">
+      <CalendarCheck className="w-4 h-4 shrink-0" />
+      <p className="flex-1 min-w-0">
+        <strong>{r.titulo}</strong> ({fechaCorta(r.fecha)}): la lista está abierta. ¿Has ido? +{r.puntos} punto{r.puntos !== 1 ? 's' : ''}.
+        {pendientes.length > 1 && <> <button onClick={onVer} className="underline">Ver las {pendientes.length}</button></>}
+      </p>
+      <button onClick={async () => { await marcarAsistencia(r.id, me.id, me.id); setRecarga((x) => x + 1) }}
+        className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full bg-teal-600 text-white text-sm font-semibold hover:bg-teal-700">
+        <Check className="w-4 h-4" />He ido
+      </button>
     </div>
   )
 }
 
 // ---------- Sistema de puntos del centro (admin de centro o admin general) ----------
 function BaremoPuntos({ centro, baremo, onChanged }) {
-  const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena })
+  const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena, reunion: baremo.reunion })
   const [f, setF] = useState(inicial)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
-  const clave = JSON.stringify([centro, baremo.estados, baremo.quincena])
+  const clave = JSON.stringify([centro, baremo.estados, baremo.quincena, baremo.reunion])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setF(inicial()); setMsg(''); setErr('') }, [clave])
   const num = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0))
-  const cambiado = JSON.stringify([f.estados, f.quincena]) !== JSON.stringify([baremo.estados, baremo.quincena])
+  const cambiado = JSON.stringify([f.estados, f.quincena, f.reunion]) !== JSON.stringify([baremo.estados, baremo.quincena, baremo.reunion])
 
   const guardar = async (valor) => {
     setBusy(true); setErr(''); setMsg('')
@@ -1643,11 +1896,17 @@ function BaremoPuntos({ centro, baremo, onChanged }) {
             onChange={(ev) => setF((p) => ({ ...p, quincena: num(ev.target.value) }))}
             className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
         </label>
+        <label className="flex items-center justify-between gap-3 text-sm sm:col-span-2">
+          <span className="text-slate-700">Ir a una reunión <span className="text-slate-400">(valor por defecto al crearla)</span></span>
+          <input type="number" min="0" max="100" value={f.reunion}
+            onChange={(ev) => setF((p) => ({ ...p, reunion: num(ev.target.value) }))}
+            className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
+        </label>
       </div>
       {err && <p className="text-sm text-rose-600 mt-3">{err}</p>}
       {msg && <p className="text-sm text-emerald-700 mt-3">{msg}</p>}
       <div className="flex flex-wrap gap-2 mt-4">
-        <button onClick={() => guardar({ estados: f.estados, quincena: f.quincena })} disabled={busy || !cambiado}
+        <button onClick={() => guardar({ estados: f.estados, quincena: f.quincena, reunion: f.reunion })} disabled={busy || !cambiado}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#0e2d4d] text-white text-sm font-semibold disabled:opacity-40">
           <Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}
         </button>
@@ -1758,7 +2017,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
 
       <GraficaEmpresas users={users} companies={deMiCentro} />
 
-      <Actividad users={users} companies={companies} baremo={baremo} />
+      <Actividad users={users} companies={companies} baremo={baremo} centro={miCentro} />
 
       {centros.length > 0 && <BaremoPuntos centro={miCentro} baremo={baremo} onChanged={onChanged} />}
 
@@ -1816,6 +2075,11 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
                   <KeyRound className="w-3.5 h-3.5" />
                 </button>
               )}
+            <button onClick={() => cambiarPerfil(u, { secretaria: !u.secretaria })}
+              title={u.secretaria ? 'Quitarle la secretaría (deja de poder crear reuniones y pasar lista)' : 'Hacerle secretaria/o: podrá crear reuniones y pasar lista'}
+              className={`px-2 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1 ${u.secretaria ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+              <CalendarCheck className="w-3.5 h-3.5" />Secretaría
+            </button>
             {selCentro(u)}
             <select
               value={u.rol}
@@ -2257,7 +2521,7 @@ export default function App() {
           <div className="flex items-center gap-1.5 sm:gap-3">
             {(
               <nav className="flex gap-0.5 sm:gap-1">
-                {[['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['ranking', 'Ranking']].map(([id, label]) => (
+                {[['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
                   <button
                     key={id}
                     onClick={() => setTab(id)}
@@ -2297,7 +2561,9 @@ export default function App() {
 
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 'ranking' ? (
-          <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} />
+          <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} centro={miCentro} />
+        ) : tab === 'reuniones' ? (
+          <Reuniones me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin || !!me.secretaria} baremo={baremo} />
         ) : tab === 'seguimiento' && isAdmin ? (
           <Seguimiento users={usersCentro} companies={companies} version={claveEmpresas} onAbrir={setModal} />
         ) : tab === 'equipo' && isAdmin ? (
@@ -2352,6 +2618,7 @@ export default function App() {
                 <p>Te quedan <strong>{misSinContactar}</strong> empresas sin contactar. Ve pidiendo el siguiente lote.</p>
               </div>
             )}
+            <AvisoReunion me={me} centro={miCentro} onVer={() => setTab('reuniones')} />
             {agendaVisible && <MiQuincena me={me} companies={companies} onAbrir={setModal} puntos={baremo.quincena} />}
             {agendaVisible && (nHoy + nAtrasadas + nSinMover) > 0 && (
               <div className="flex flex-wrap gap-2 mb-4">
