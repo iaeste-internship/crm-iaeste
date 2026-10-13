@@ -1991,6 +1991,15 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
     else onChanged()
   }
   const cambiarRol = (u, rol) => cambiarPerfil(u, { rol })
+  // Borra la cuenta entera (perfil + email): podrá volver a registrarse con el mismo email.
+  // Sus empresas vuelven a quedar sin asignar y su historial se conserva.
+  const borrarUsuario = async (u) => {
+    if (!confirm(`¿Borrar a ${u.nombre} del CRM?\n\nSe borra su cuenta y su email, y sus ${cuenta(u.id)} empresas quedan sin asignar. El historial de las empresas se conserva. Podrá volver a registrarse con el mismo email.`)) return
+    setErr('')
+    const { error } = await supabase.rpc('admin_borrar_usuario', { p_usuario: u.id })
+    if (error) setErr(/function|schema cache/i.test(error.message) ? 'Falta ejecutar migracion_borrar_usuarios.sql en Supabase.' : error.message)
+    else onChanged()
+  }
   const selCentro = (u) => isSuper && centros.length > 1 && (
     <select value={u.centro || ''} onChange={(e) => cambiarPerfil(u, { centro: e.target.value })} disabled={u.id === me.id}
       title="Centro de esta persona" className="px-2 py-1.5 rounded-lg border border-slate-300 text-xs bg-white disabled:opacity-50">
@@ -2010,7 +2019,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
           : <>Eres <strong>admin de centro</strong> de {miCentro}: gestionas a tu gente y repartes empresas del bote solo a personas de {miCentro}. </>}
         Para incorporar a alguien: pídele que se <strong>registre</strong> en esta misma página. Aparecerá aquí
         como miembro y podrás asignarle empresas o hacerle admin. Si alguien olvida su contraseña,
-        pulsa la llave junto a su nombre para ponerle una temporal. Para eliminar cuentas, usa el panel de Supabase (Authentication → Users).
+        pulsa la llave junto a su nombre para ponerle una temporal. Para borrar a alguien, pulsa la papelera: se borra su cuenta y podrá volver a registrarse con el mismo email.
       </div>
       {err && <p className="text-sm text-rose-600">{err}</p>}
       {passOk && <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{passOk}</p>}
@@ -2081,6 +2090,12 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
               <CalendarCheck className="w-3.5 h-3.5" />Secretaría
             </button>
             {selCentro(u)}
+            {u.id !== me.id && (isSuper || u.rol !== 'superadmin') && (
+              <button onClick={() => borrarUsuario(u)} title="Borrar del CRM (podrá volver a registrarse)"
+                className="p-1.5 rounded-lg border border-slate-300 text-slate-400 hover:text-rose-600 hover:bg-rose-50">
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
             <select
               value={u.rol}
               onChange={(e) => cambiarRol(u, e.target.value)}
