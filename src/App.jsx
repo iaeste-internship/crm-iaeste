@@ -257,55 +257,140 @@ const AZUL = '#0b3d59'
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 const SEP = '-'.repeat(108)
 
-const asuntoPlantilla = (emp) =>
-  `IAESTE Madrid - Programa de prácticas internacionales para ${emp.nombre || 'su empresa'}`
+// Cada centro tiene su plantilla (columna centros.plantilla, se edita en Equipo). El cuerpo se escribe
+// como texto sencillo: una línea en blanco separa párrafos, «- » al principio hace una viñeta,
+// **así** va en negrita y «---» es una línea separadora. Se pueden usar {contacto}, {mi_nombre},
+// {empresa}, {correo_centro} y {centro}. El aviso legal de IAESTE España es igual para todos.
+const CUERPO_DEFECTO = `Buenos días {contacto},
 
-const plantillaHtml = (emp, yo) => {
+Mi nombre es {mi_nombre} y trabajo como parte de la Asociación internacional IAESTE. Como comenté por teléfono, este correo contiene información básica acerca de nuestro programa de prácticas internacionales, así como una presentación visual adjunta. Si hiciese falta más información al respecto, estamos abiertos a tener una reunión para profundizar más:
+
+**IAESTE** (International Association for the Exchange of Students for Technical Experience) es una organización internacional cuyo objetivo es promover la realización de prácticas remuneradas en empresas y entidades de diversos países para estudiantes de especialidades científico-técnicas, fomentando así la excelencia profesional y el desarrollo de las aptitudes personales en entornos multiculturales y pluridisciplinares.
+
+Adjunto para su información:
+- Presentación programa IAESTE
+- Modelo convenio
+
+Si están interesados en formalizar una oferta de prácticas a través del programa de movilidad IAESTE, el proceso sería el siguiente:
+
+Cumplimentar y enviar a {correo_centro} la siguiente documentación:
+- Formulario oferta prácticas (1 por plaza ofertada). En este documento se detalla el perfil buscado.
+- Compromiso empresa
+- Acuerdo corresponsabilidad tratamiento datos
+
+**Características generales de la oferta de prácticas:**
+- La empresa determina la duración y el periodo de la práctica, con duración mínima de 6 semanas y máximo 1 año.
+- El becario trabajará un máximo de 40 horas semanales de lunes a viernes.
+- El becario recibirá una remuneración mínima de 800 euros netos mensuales por parte de la empresa, de forma que pueda mantenerse durante la práctica en nuestro país (con la posibilidad de ofrecer alojamiento, manutención y transporte, en lugar de la remuneración).
+- La empresa recibirá el perfil de un estudiante que cumpla los requisitos solicitados (un perfil por oferta). Se dispondrá del plazo de dos semanas para evaluar y/o entrevistar al estudiante de forma online si se considera necesario.
+- Tras la evaluación del perfil proporcionado, la empresa aceptará o rechazará al estudiante. Si este es aceptado, se procederá a la firma de un convenio entre IAESTE España, becario y la empresa que permita la incorporación del estudiante. En ningún caso será necesario un contrato laboral.
+
+---
+
+Indicarles que en el caso de becarios o recién graduados extracomunitarios que vengan a España a realizar una práctica mediante convenio por un periodo superior a 90 días y en aplicación del Real Decreto Ley 11/2018 de 31 de agosto- Disposición adicional decimoctava deberán estar provistos de la Autorización de residencia para prácticas no laborales mediante convenio.
+
+Para ello, la entidad que acoge al becario en prácticas (la empresa) debe solicitar de manera telemática a través de la plataforma MERCURIO https://sede.administracionespublicas.gob.es/mercurio/inicioMercurio.html esta Autorización de residencia para prácticas no laborales mediante convenio, en los términos que se indica en esta disposición.
+
+A la recepción del convenio les remitiremos copia firmada por IAESTE y Estudiante junto con resto de documentación requerida por la Administración, para que procedan a la solicitud de autorización para estancia por prácticas no laborales.
+
+La resolución de esta autorización se resolverá en el plazo máximo de 30 días. Si no se resuelve en dicho plazo, la autorización se entenderá estimada por silencio administrativo. Al día siguiente de que expire ese plazo la empresa deberá solicitar a la Administración el correspondiente Certificado de silencio.
+
+---
+
+Por último, informarles que deberán en su momento solicitar el nº de seguridad social y posterior alta en la TGSS como becario en prácticas externas.
+
+A estos efectos, la Administración ha abierto la posibilidad de que los autorizados al sistema RED (las empresas) realicen dicha solicitud a través de CASIA en relación con los trabajadores respecto de los cuales van a comunicar con posterioridad su alta. Para ello, se ha creado un nuevo trámite, “Solicitud de número de Seguridad Social”, que se encuentra ya disponible dentro de las subcategorías correspondientes a los trámites de Afiliación, altas y bajas < Altas de trabajadores cuenta ajena.
+
+La documentación que deberá acompañar a dicha solicitud será la siguiente:
+
+TA.1 firmado por el becario, pasaporte o ID, NIE y convenio
+
+**• ALTA**
+
+Una vez la empresa disponga del CCC específico y del número de Seguridad Social del estudiante extranjero, el alta en el Régimen General de la Seguridad Social de los estudiantes se deberá realizar mediante el mismo procedimiento que el de un trabajador por cuenta ajena, realizando el trámite ante la Seguridad Social presencialmente o a través del Sistema Red.
+
+Código de alta: 1
+Exclusión cotización: 986 (programas de formación)
+Y la Relación Laboral de Carácter Especial (RLCE) dependiendo de si las prácticas son curriculares o extracurriculares:
+·  Curriculares: 9928
+·  Extracurriculares: 9927
+
+Quedamos a su disposición para cualquier consulta que tengan o para fijar una reunión. Gracias de antemano y un saludo,`
+
+const PLANTILLA_DEFECTO = {
+  asunto: 'IAESTE Madrid - Programa de prácticas internacionales para {empresa}',
+  cuerpo: CUERPO_DEFECTO,
+  equipo: 'Equipo de Empresas IAESTE {centro}',
+  entidad: 'IAESTE Madrid',
+  direccion: '',
+  web: 'www.iaeste.es',
+  correo: '',
+}
+// Lo que ya usaba TLMA, para que no cambie nada si no se toca
+const PLANTILLA_CENTRO = {
+  TLMA: {
+    entidad: 'IAESTE Telecomunicación Madrid',
+    direccion: 'E.T.S.I. Telecomunicación Madrid - Local 206 - L\nAvenida Complutense, 30, 28040, Madrid',
+    correo: 'iaestetlmd@gmail.com',
+  },
+}
+const plantillaDe = (centros = [], id) => {
+  const guardada = centros.find((c) => c.id === id)?.plantilla
+  return { ...PLANTILLA_DEFECTO, ...(PLANTILLA_CENTRO[id] || {}), ...(guardada || {}), centro: id, propia: !!guardada }
+}
+
+const rellenar = (t, vars, html) => String(t || '').replace(/\{(\w+)\}/g, (m, k) => (k in vars ? (html ? esc(vars[k]) : vars[k]) : m))
+// Texto escapado → enlaces y negritas
+const enlinea = (t) => t
+  .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+  .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+  .replace(/(^|[\s(])([\w.+-]+@[\w-]+\.[\w.-]+)/g, '$1<a href="mailto:$2">$2</a>')
+// Cuerpo en texto sencillo → HTML para Gmail
+const cuerpoHtml = (texto) => {
   const p = (t) => `<p style="margin:0 0 12px 0">${t}</p>`
-  const li = (items) => `<ul style="margin:0 0 12px 0">${items.map((i) => `<li>${i}</li>`).join('')}</ul>`
-  const hr = `<p style="margin:12px 0">${SEP}</p>`
-  const cuerpo = [
-    p(`Buenos días${emp.contacto ? ' ' + esc(emp.contacto) : ''},`),
-    p(`Mi nombre es ${esc(yo || '(NOMBRE Y APELLIDO)')} y trabajo como parte de la Asociación internacional IAESTE. Como comenté por teléfono, este correo contiene información básica acerca de nuestro programa de prácticas internacionales, así como una presentación visual adjunta. Si hiciese falta más información al respecto, estamos abiertos a tener una reunión para profundizar más:`),
-    p('<b>IAESTE</b> (International Association for the Exchange of Students for Technical Experience) es una organización internacional cuyo objetivo es promover la realización de prácticas remuneradas en empresas y entidades de diversos países para estudiantes de especialidades científico-técnicas, fomentando así la excelencia profesional y el desarrollo de las aptitudes personales en entornos multiculturales y pluridisciplinares.'),
-    p('Adjunto para su información:'),
-    li(['Presentación programa IAESTE', 'Modelo convenio']),
-    p('Si están interesados en formalizar una oferta de prácticas a través del programa de movilidad IAESTE, el proceso sería el siguiente:'),
-    p('Cumplimentar y enviar a <a href="mailto:iaestetlmd@gmail.com">iaestetlmd@gmail.com</a> la siguiente documentación:'),
-    li(['Formulario oferta prácticas (1 por plaza ofertada). En este documento se detalla el perfil buscado.', 'Compromiso empresa', 'Acuerdo corresponsabilidad tratamiento datos']),
-    p('<b>Características generales de la oferta de prácticas:</b>'),
-    li([
-      'La empresa determina la duración y el periodo de la práctica, con duración mínima de 6 semanas y máximo 1 año.',
-      'El becario trabajará un máximo de 40 horas semanales de lunes a viernes.',
-      'El becario recibirá una remuneración mínima de 800 euros netos mensuales por parte de la empresa, de forma que pueda mantenerse durante la práctica en nuestro país (con la posibilidad de ofrecer alojamiento, manutención y transporte, en lugar de la remuneración).',
-      'La empresa recibirá el perfil de un estudiante que cumpla los requisitos solicitados (un perfil por oferta). Se dispondrá del plazo de dos semanas para evaluar y/o entrevistar al estudiante de forma online si se considera necesario.',
-      'Tras la evaluación del perfil proporcionado, la empresa aceptará o rechazará al estudiante. Si este es aceptado, se procederá a la firma de un convenio entre IAESTE España, becario y la empresa que permita la incorporación del estudiante. En ningún caso será necesario un contrato laboral.',
-    ]),
-    hr,
-    p('Indicarles que en el caso de becarios o recién graduados extracomunitarios que vengan a España a realizar una práctica mediante convenio por un periodo superior a 90 días y en aplicación del Real Decreto Ley 11/2018 de 31 de agosto- Disposición adicional decimoctava deberán estar provistos de la Autorización de residencia para prácticas no laborales mediante convenio.'),
-    p('Para ello, la entidad que acoge al becario en prácticas (la empresa) debe solicitar de manera telemática a través de la plataforma MERCURIO <a href="https://sede.administracionespublicas.gob.es/mercurio/inicioMercurio.html">https://sede.administracionespublicas.gob.es/mercurio/inicioMercurio.html</a> esta Autorización de residencia para prácticas no laborales mediante convenio, en los términos que se indica en esta disposición.'),
-    p('A la recepción del convenio les remitiremos copia firmada por IAESTE y Estudiante junto con resto de documentación requerida por la Administración, para que procedan a la solicitud de autorización para estancia por prácticas no laborales.'),
-    p('La resolución de esta autorización se resolverá en el plazo máximo de 30 días. Si no se resuelve en dicho plazo, la autorización se entenderá estimada por silencio administrativo. Al día siguiente de que expire ese plazo la empresa deberá solicitar a la Administración el correspondiente Certificado de silencio.'),
-    hr,
-    p('Por último, informarles que deberán en su momento solicitar el nº de seguridad social y posterior alta en la TGSS como becario en prácticas externas.'),
-    p('A estos efectos, la Administración ha abierto la posibilidad de que los autorizados al sistema RED (las empresas) realicen dicha solicitud a través de CASIA en relación con los trabajadores respecto de los cuales van a comunicar con posterioridad su alta. Para ello, se ha creado un nuevo trámite, “Solicitud de número de Seguridad Social”, que se encuentra ya disponible dentro de las subcategorías correspondientes a los trámites de Afiliación, altas y bajas &lt; Altas de trabajadores cuenta ajena.'),
-    p('La documentación que deberá acompañar a dicha solicitud será la siguiente:'),
-    p('TA.1 firmado por el becario, pasaporte o ID, NIE y convenio'),
-    p('<b>• ALTA</b>'),
-    p('Una vez la empresa disponga del CCC específico y del número de Seguridad Social del estudiante extranjero, el alta en el Régimen General de la Seguridad Social de los estudiantes se deberá realizar mediante el mismo procedimiento que el de un trabajador por cuenta ajena, realizando el trámite ante la Seguridad Social presencialmente o a través del Sistema Red.'),
-    p('Código de alta: 1<br>Exclusión cotización: 986 (programas de formación)<br>Y la Relación Laboral de Carácter Especial (RLCE) dependiendo de si las prácticas son curriculares o extracurriculares:<br>·&nbsp; Curriculares: 9928<br>·&nbsp; Extracurriculares: 9927'),
-    p('Quedamos a su disposición para cualquier consulta que tengan o para fijar una reunión. Gracias de antemano y un saludo,'),
-  ].join('')
+  return String(texto || '').replace(/\r/g, '').split(/\n\s*\n/).map((bloque) => {
+    const lineas = bloque.split('\n').filter((l) => l.trim() !== '')
+    if (!lineas.length) return ''
+    if (lineas.length === 1 && /^-{3,}$/.test(lineas[0].trim())) return `<p style="margin:12px 0">${SEP}</p>`
+    let out = '', normales = [], vinetas = []
+    const vaciar = () => {
+      if (normales.length) { out += p(normales.map((l) => enlinea(esc(l))).join('<br>')); normales = [] }
+      if (vinetas.length) { out += `<ul style="margin:0 0 12px 0">${vinetas.map((l) => `<li>${enlinea(esc(l))}</li>`).join('')}</ul>`; vinetas = [] }
+    }
+    for (const l of lineas) {
+      if (/^\s*[-*]\s+/.test(l)) { if (normales.length) vaciar(); vinetas.push(l.replace(/^\s*[-*]\s+/, '')) }
+      else { if (vinetas.length) vaciar(); normales.push(l) }
+    }
+    vaciar()
+    return out
+  }).join('')
+}
 
+const variablesPlantilla = (emp, yo, pl) => ({
+  contacto: emp.contacto || '',
+  mi_nombre: yo || '(NOMBRE Y APELLIDO)',
+  empresa: emp.nombre || 'su empresa',
+  correo_centro: pl.correo || 'nuestro correo',
+  centro: pl.centro || '',
+})
+const asuntoPlantilla = (emp, pl = PLANTILLA_DEFECTO) =>
+  rellenar(pl.asunto, variablesPlantilla(emp, '', pl), false).replace(/\s+/g, ' ').trim()
+
+const plantillaHtml = (emp, yo, pl = PLANTILLA_DEFECTO) => {
+  const v = variablesPlantilla(emp, yo, pl)
+  // «Buenos días ,» queda raro si no hay persona de contacto
+  const cuerpo = cuerpoHtml(rellenar(pl.cuerpo, v, false).replace(/ +,/g, ','))
+  const lineas = [rellenar(pl.equipo, v, false)].filter(Boolean).map(esc).join('<br>')
+  const dir = String(pl.direccion || '').split('\n').map((l) => l.trim()).filter(Boolean).map(esc).join('<br>')
+  const web = String(pl.web || '').trim()
   const legal = 'font-family:Tahoma,Verdana,sans-serif;font-size:11px;line-height:1.7;color:#002e7a;text-align:justify;margin:0'
   const firma = `
 <div style="font-family:Tahoma,Verdana,sans-serif;font-size:13px;color:${AZUL};margin-top:24px">
-  <b>${esc(yo || 'Enrique Rodríguez Palomo')}</b><br>
-  Equipo de Empresas IAESTE TLMA<br><br>
-  <b>IAESTE Telecomunicación Madrid</b><br>
-  E.T.S.I. Telecomunicación Madrid - Local 206 - L<br>
-  Avenida Complutense, 30, 28040, Madrid<br>
-  <a href="https://www.iaeste.es" style="color:#1155cc">www.iaeste.es</a><br><br>
+  <b>${esc(yo || '(NOMBRE Y APELLIDO)')}</b><br>
+  ${lineas}<br><br>
+  ${pl.entidad ? `<b>${esc(pl.entidad)}</b><br>` : ''}
+  ${dir ? `${dir}<br>` : ''}
+  ${web ? `<a href="${esc(/^https?:/.test(web) ? web : 'https://' + web)}" style="color:#1155cc">${esc(web)}</a><br>` : ''}<br>
   <img src="${LOGO_URL}" alt="IAESTE Madrid" width="240" height="73" style="display:block;border:0"><br>
 </div>
 <p style="${legal}">${'-'.repeat(134)}</p>
@@ -313,7 +398,6 @@ const plantillaHtml = (emp, yo) => {
 <p style="${legal}"><b><u>Data protection</u>.</b> IAESTE ESPAÑA informs you that your email address, as well as the rest of your personal data, will be used for contacting you and providing you with our services. This data is necessary to communicate with you, which allows us to use your information within legal limits. Additionally, entities which require access to your information so that we can provide our services may have access to it. We will keep your data during our relationship and for the period required by applicable law. You may contact us at any time to find out the information we have on you, correct it if it is incorrect and delete it once our relationship has ended. You also have the right to request the transfer of your information to another entity (portability). To request any of these rights, you must make a written request to our address, along with a photocopy of your DNI identity document: IAESTE ESPAÑA, UNIVERSIDAD POLITÉCNICA DE VALENCIA, EDIFICIO 8K, PLANTA BAJA, ALA OESTE, DESPACHOS 11-13,CP 46022 VALENCIA. In case of considering your rights to have been neglected, you can lodge a claim before the Spanish Data Protection Agency (<a href="https://www.agpd.es" style="color:#1155cc">www.agpd.es</a>).</p>
 <p style="${legal}"><b><u>Confidentiality</u>.</b> - The content of this communication, as well as all documentation attached, is confidential and intended for its recipient. In the case of you not being the intended recipient, we request that you notify us and do not communicate its content to third parties, proceeding to delete it.</p>
 <p style="${legal}"><b><u>Exemption from liability</u>.</b> - The sending of this communication does not entail the sender’s obligation to monitor the absence of viruses, worms, trojan horses and/or any other harmful computer program, the recipient having to have the necessary hardware and software tools to guarantee both the security of their information system and the detection and elimination of harmful computer programs. IAESTE ESPAÑA is not liable for liquidated damages that such computer programs may cause to the recipient.</p>`
-
   return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222">${cuerpo}</div>${firma}`
 }
 
@@ -325,8 +409,8 @@ const htmlATexto = (html) => {
 }
 
 // Copia la plantilla con formato al portapapeles. Devuelve true si se ha podido.
-const copiarPlantilla = async (emp, yo) => {
-  const html = plantillaHtml(emp, yo)
+const copiarPlantilla = async (emp, yo, pl) => {
+  const html = plantillaHtml(emp, yo, pl)
   const texto = htmlATexto(html)
   try {
     if (window.ClipboardItem && navigator.clipboard?.write) {
@@ -681,13 +765,13 @@ function Auth() {
 }
 
 // ---------- Acciones rápidas: llamar / email / plantilla ----------
-function AccionesContacto({ emp, yo, onEmail }) {
+function AccionesContacto({ emp, yo, plantilla = PLANTILLA_DEFECTO, onEmail }) {
   const [copiada, setCopiada] = useState(null) // null | 'ok' | 'error'
   if (!emp.telefono && !emp.email) return null
   const tel = String(emp.telefono || '').replace(/\s/g, '')
   const usarPlantilla = () => {
     // Se llama dentro del clic (antes de que se abra la pestaña de Gmail) para que el navegador permita copiar
-    copiarPlantilla(emp, yo).then((ok) => {
+    copiarPlantilla(emp, yo, plantilla).then((ok) => {
       setCopiada(ok ? 'ok' : 'error')
       setTimeout(() => setCopiada(null), 8000)
       // Al enviar el correo se marca la empresa y se cierra la ficha
@@ -710,7 +794,7 @@ function AccionesContacto({ emp, yo, onEmail }) {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 text-xs font-medium text-slate-700 hover:bg-slate-50">
               <Mail className="w-3.5 h-3.5" />Email
             </a>
-            <a href={gmailUrl(emp.email, asuntoPlantilla(emp))} target="_blank" rel="noopener noreferrer"
+            <a href={gmailUrl(emp.email, asuntoPlantilla(emp, plantilla))} target="_blank" rel="noopener noreferrer"
               title="Copia la plantilla con formato y abre Gmail: pega con Ctrl+V en el cuerpo"
               onClick={usarPlantilla}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-xs font-medium text-blue-700 hover:bg-blue-100">
@@ -891,7 +975,7 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
         <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(f.direccion)}`} target="_blank" rel="noopener noreferrer"
           className="inline-flex items-center gap-1.5 text-xs text-blue-700 hover:underline"><MapPin className="w-3.5 h-3.5" />Ver en el mapa</a>
       )}
-      <AccionesContacto emp={f} yo={me.nombre} onEmail={alEnviarCorreo} />
+      <AccionesContacto emp={f} yo={me.nombre} plantilla={plantillaDe(centros, me.centro || 'TLMA')} onEmail={alEnviarCorreo} />
     </>
   )
 
@@ -1847,6 +1931,112 @@ function AvisoReunion({ me, centro, onVer }) {
   )
 }
 
+// ---------- Plantilla de correo del centro (admin de centro o admin general) ----------
+function PlantillaCorreo({ centro, centros, me, onChanged }) {
+  const pl = plantillaDe(centros, centro)
+  const CAMPOS = ['asunto', 'cuerpo', 'equipo', 'entidad', 'direccion', 'web', 'correo']
+  const inicial = () => Object.fromEntries(CAMPOS.map((k) => [k, pl[k] || '']))
+  const [f, setF] = useState(inicial)
+  const [abierta, setAbierta] = useState(false)
+  const [ver, setVer] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+  const clave = JSON.stringify([centro, CAMPOS.map((k) => pl[k])])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { setF(inicial()); setMsg(''); setErr('') }, [clave])
+  const cambiado = CAMPOS.some((k) => (f[k] || '') !== (pl[k] || ''))
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }))
+
+  const guardar = async (valor) => {
+    setBusy(true); setErr(''); setMsg('')
+    const { error } = await supabase.rpc('guardar_plantilla_centro', { p_centro: centro, p_plantilla: valor })
+    setBusy(false)
+    if (error) {
+      setErr(/function|schema cache/i.test(error.message) ? 'Falta ejecutar migracion_plantillas_correo.sql en Supabase.' : error.message)
+      return
+    }
+    setMsg(valor ? 'Plantilla guardada ✓' : 'Vuelve a usar la plantilla por defecto ✓')
+    onChanged()
+  }
+  const campo = 'w-full px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-900'
+  const etiqueta = 'block text-xs font-medium text-slate-500 mb-1'
+
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] p-5">
+      <button onClick={() => setAbierta(!abierta)} className="w-full flex items-center justify-between gap-2 text-left">
+        <h3 className="font-bold text-slate-900 flex items-center gap-2"><Send className="w-4 h-4 text-blue-600" />Plantilla de correo de {centro}</h3>
+        <ChevronRight className={`w-4 h-4 text-slate-400 transition-transform ${abierta ? 'rotate-90' : ''}`} />
+      </button>
+      <p className="text-xs text-slate-500 mt-1">
+        Es lo que se copia al pulsar «Plantilla de contacto» en una empresa. Cada persona de {centro} la envía con su nombre en la firma.
+        {!pl.propia && ' Ahora mismo usa la plantilla por defecto.'}
+      </p>
+      {abierta && (
+        <div className="mt-4 space-y-3">
+          <div>
+            <label className={etiqueta}>Asunto</label>
+            <input value={f.asunto} onChange={set('asunto')} className={campo} />
+          </div>
+          <div>
+            <label className={etiqueta}>Texto del correo</label>
+            <textarea value={f.cuerpo} onChange={set('cuerpo')} rows={14} className={`${campo} font-mono text-xs leading-relaxed`} />
+            <p className="text-xs text-slate-400 mt-1">
+              Una línea en blanco separa párrafos · «- » al principio de la línea hace una viñeta · **texto** va en negrita · «---» es una línea separadora.
+              Se rellenan solos: {'{contacto}'}, {'{mi_nombre}'}, {'{empresa}'}, {'{correo_centro}'}, {'{centro}'}.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className={etiqueta}>Firma: equipo</label>
+              <input value={f.equipo} onChange={set('equipo')} className={campo} placeholder="Equipo de Empresas IAESTE {centro}" />
+            </div>
+            <div>
+              <label className={etiqueta}>Firma: nombre del comité</label>
+              <input value={f.entidad} onChange={set('entidad')} className={campo} placeholder="IAESTE Telecomunicación Madrid" />
+            </div>
+            <div className="sm:col-span-2">
+              <label className={etiqueta}>Firma: dirección (una línea por renglón)</label>
+              <textarea value={f.direccion} onChange={set('direccion')} rows={2} className={campo} />
+            </div>
+            <div>
+              <label className={etiqueta}>Firma: web</label>
+              <input value={f.web} onChange={set('web')} className={campo} />
+            </div>
+            <div>
+              <label className={etiqueta}>Correo del comité ({'{correo_centro}'})</label>
+              <input value={f.correo} onChange={set('correo')} className={campo} placeholder="comite@gmail.com" />
+            </div>
+          </div>
+          {err && <p className="text-sm text-rose-600">{err}</p>}
+          {msg && <p className="text-sm text-emerald-700">{msg}</p>}
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => guardar(f)} disabled={busy || !cambiado}
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#0e2d4d] text-white text-sm font-semibold disabled:opacity-40">
+              <Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}
+            </button>
+            <button onClick={() => setVer(!ver)} className="px-4 py-2 rounded-full border border-slate-300 text-sm text-slate-600 hover:bg-slate-50">
+              {ver ? 'Ocultar vista previa' : 'Vista previa'}
+            </button>
+            {pl.propia && (
+              <button onClick={() => confirm(`¿Volver a la plantilla por defecto en ${centro}?`) && guardar(null)} disabled={busy}
+                className="px-4 py-2 rounded-full border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+                Volver a la de por defecto
+              </button>
+            )}
+          </div>
+          {ver && (
+            <div className="border border-slate-200 rounded-xl p-4 max-h-[32rem] overflow-y-auto bg-white">
+              <p className="text-xs text-slate-500 mb-3"><strong>Asunto:</strong> {asuntoPlantilla({ nombre: 'Empresa de ejemplo' }, { ...pl, ...f })}</p>
+              <div className="[&_ul]:list-disc [&_ul]:pl-6 [&_a]:text-blue-700 [&_a]:underline" dangerouslySetInnerHTML={{ __html: plantillaHtml({ nombre: 'Empresa de ejemplo', contacto: 'Laura' }, me.nombre, { ...pl, ...f }) }} />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ---------- Sistema de puntos del centro (admin de centro o admin general) ----------
 function BaremoPuntos({ centro, baremo, onChanged }) {
   const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena, reunion: baremo.reunion })
@@ -2029,6 +2219,8 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
       <Actividad users={users} companies={companies} baremo={baremo} centro={miCentro} />
 
       {centros.length > 0 && <BaremoPuntos centro={miCentro} baremo={baremo} onChanged={onChanged} />}
+
+      <PlantillaCorreo centro={miCentro} centros={centros} me={me} onChanged={onChanged} />
 
       <p className="text-xs text-slate-500 px-1">
         Bote común (compartido con todos los centros): <strong>{libres.length}</strong> empresas sin asignar en estado «Sin contactar» (sin contar las históricas, que se asignan a mano desde su ficha).
