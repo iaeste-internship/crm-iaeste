@@ -2382,9 +2382,61 @@ function MiQuincena({ me, companies, onAbrir, puntos = PUNTOS.quincena }) {
 // ---------- Seguimiento (solo admin): últimos cambios del CRM ----------
 // Sale del historial, así que cada entrada conserva la nota que se escribió EN ESE MOMENTO:
 // aunque la empresa cambie luego de estado o tenga notas nuevas, lo ya escrito no cambia.
-function Seguimiento({ users, companies, version, onAbrir }) {
+// Selector de empresa con búsqueda por nombre o CIF (hay cientos: un <select> sería inmanejable)
+function BuscadorEmpresa({ companies, valor, onCambiar }) {
+  const [texto, setTexto] = useState('')
+  const [abierto, setAbierto] = useState(false)
+  if (valor) {
+    return (
+      <span className="inline-flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-lg border border-blue-600 bg-blue-50 text-blue-700 text-xs font-medium max-w-[16rem]">
+        <Building2 className="w-3.5 h-3.5 shrink-0" />
+        <span className="truncate">{valor.nombre}</span>
+        <button onClick={() => { onCambiar(null); setTexto('') }} title="Quitar filtro de empresa" className="p-0.5 rounded hover:bg-blue-100">
+          <X className="w-3.5 h-3.5" />
+        </button>
+      </span>
+    )
+  }
+  const q = texto.trim().toLowerCase()
+  const qCif = cifNorm(texto)
+  const sugerencias = q
+    ? companies.filter((c) => (c.nombre || '').toLowerCase().includes(q) || (qCif.length >= 3 && cifNorm(c.cif).includes(qCif))).slice(0, 8)
+    : []
+  return (
+    <div className="relative min-w-[11rem]">
+      <Building2 className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+      <input value={texto} onChange={(e) => { setTexto(e.target.value); setAbierto(true) }}
+        onFocus={() => setAbierto(true)} onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && sugerencias[0]) onCambiar({ id: sugerencias[0].id, nombre: sugerencias[0].nombre }) }}
+        placeholder="Todas las empresas"
+        className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+      {abierto && q && (
+        <ul className="absolute z-20 mt-1 left-0 w-72 max-w-[80vw] bg-white border border-slate-200 rounded-xl shadow-lg py-1 text-xs">
+          {sugerencias.length === 0 ? (
+            <li className="px-3 py-2 text-slate-400">Ninguna empresa coincide</li>
+          ) : sugerencias.map((c) => (
+            <li key={c.id}>
+              <button onMouseDown={(e) => e.preventDefault()} onClick={() => onCambiar({ id: c.id, nombre: c.nombre })}
+                className="w-full text-left px-3 py-1.5 hover:bg-slate-50 flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${estadoDe(c.estado).dot}`} />
+                <span className="truncate text-slate-800">{c.nombre}</span>
+                {c.cif && <span className="ml-auto text-slate-400 shrink-0">{c.cif}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+// Con una empresa elegida se ve TODO su historial (sin límite de días): cuándo la contactó cada
+// persona y cómo (el estado al que la pasó —mail, llamada sin respuesta…— y la nota que escribió).
+// Se puede combinar con el filtro de persona.
+function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
   const [dias, setDias] = useState(7)
   const [persona, setPersona] = useState('')
+  const [empresa, setEmpresa] = useState(null) // { id, nombre } | null
   const [tipo, setTipo] = useState('seguimientos') // 'seguimientos' (notas y estados) | 'todo'
   const [busca, setBusca] = useState('')
   const [filas, setFilas] = useState(null)
@@ -2392,15 +2444,16 @@ function Seguimiento({ users, companies, version, onAbrir }) {
 
   useEffect(() => {
     setFilas(null); setErr('')
-    traerTodo(() => supabase
-      .from('historial')
-      .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, detalle, estado_anterior, estado_nuevo, creado')
-      .gte('creado', sumarDias(-dias) + 'T00:00:00')
-      .order('creado', { ascending: false })
-      .order('id', { ascending: false }))
+    traerTodo(() => {
+      let q = supabase
+        .from('historial')
+        .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, detalle, estado_anterior, estado_nuevo, creado')
+      q = empresa ? q.eq('empresa_id', empresa.id) : q.gte('creado', sumarDias(-dias) + 'T00:00:00')
+      return q.order('creado', { ascending: false }).order('id', { ascending: false })
+    })
       .then(setFilas)
       .catch((e) => { setErr(e.message); setFilas([]) })
-  }, [dias, version])
+  }, [dias, empresa?.id, version])
 
   // Un cambio de estado y su nota se guardan como dos filas con la misma clave: se juntan en una
   const entradas = (() => {
@@ -2416,7 +2469,8 @@ function Seguimiento({ users, companies, version, onAbrir }) {
     const q = busca.trim().toLowerCase()
     const equipo = new Set(users.map((u) => u.id)) // solo movimientos de la gente del centro
     return out
-      .filter((h) => equipo.has(h.usuario_id))
+      // Con una empresa elegida se ve todo su historial, aunque la llevara alguien de otro centro antes
+      .filter((h) => empresa || equipo.has(h.usuario_id))
       .filter((h) => tipo === 'todo' || h.accion === 'estado' || h.accion === 'nota')
       .filter((h) => !persona || h.usuario_id === persona)
       .filter((h) => !q || (h.empresa_nombre || '').toLowerCase().includes(q) || (h.texto || '').toLowerCase().includes(q))
@@ -2430,9 +2484,33 @@ function Seguimiento({ users, companies, version, onAbrir }) {
     porDia[porDia.length - 1].items.push(h)
   }
   const tituloDia = (d) => d === HOY() ? 'Hoy' : d === sumarDias(-1) ? 'Ayer'
-    : new Date(d + 'T00:00:00').toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'long' })
+    : new Date(d + 'T00:00:00').toLocaleDateString('es-ES', {
+      weekday: 'long', day: 'numeric', month: 'long',
+      ...(d.slice(0, 4) !== HOY().slice(0, 4) ? { year: 'numeric' } : {}), // con todo el historial puede haber otros años
+    })
   const hora = (iso) => new Date(iso).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })
   const empresaDe = (id) => companies.find((c) => c.id === id)
+  const fechaHora = (iso) => new Date(iso).toLocaleString('es-ES', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+  // Resumen de la empresa elegida: contactos (notas y cambios de estado) por persona
+  const resumen = (() => {
+    if (!empresa || !filas) return null
+    const contactos = entradas.filter((h) => h.accion === 'estado' || h.accion === 'nota') // ya vienen de más nuevo a más viejo
+    const porPersona = new Map()
+    for (const h of contactos) {
+      const p = porPersona.get(h.usuario_id) || { nombre: h.usuario_nombre || 'Alguien', n: 0, ultimo: h, primero: h }
+      p.n++; p.primero = h
+      porPersona.set(h.usuario_id, p)
+    }
+    return {
+      total: contactos.length,
+      primero: contactos[contactos.length - 1] || null,
+      ultimo: contactos[0] || null,
+      personas: [...porPersona.values()],
+    }
+  })()
+  const empActual = empresa && empresaDe(empresa.id)
+  const elegirEmpresa = (id, nombre) => { setEmpresa({ id, nombre }); window.scrollTo({ top: 0, behavior: 'smooth' }) }
 
   return (
     <div className="max-w-3xl mx-auto space-y-4">
@@ -2441,13 +2519,16 @@ function Seguimiento({ users, companies, version, onAbrir }) {
           <History className="w-4 h-4 text-slate-400" />Últimos cambios del CRM
         </h2>
         <div className="flex flex-wrap items-center gap-2">
-          {[[1, 'Hoy y ayer'], [7, '7 días'], [30, '30 días']].map(([n, label]) => (
+          {empresa ? (
+            <span className="px-2.5 py-1 rounded-lg border border-blue-600 bg-blue-50 text-blue-700 font-medium text-xs">Todo su historial</span>
+          ) : [[1, 'Hoy y ayer'], [7, '7 días'], [30, '30 días']].map(([n, label]) => (
             <button key={n} onClick={() => setDias(n)}
               className={`px-2.5 py-1 rounded-lg border text-xs ${dias === n ? 'border-blue-600 bg-blue-50 text-blue-700 font-medium' : 'border-slate-300 text-slate-600 hover:bg-slate-50'}`}>
               {label}
             </button>
           ))}
           <span className="w-px h-5 bg-slate-200 mx-1" />
+          <BuscadorEmpresa companies={companies} valor={empresa} onCambiar={setEmpresa} />
           <select value={persona} onChange={(e) => setPersona(e.target.value)}
             className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-xs bg-white">
             <option value="">Todo el equipo</option>
@@ -2460,17 +2541,69 @@ function Seguimiento({ users, companies, version, onAbrir }) {
           </select>
           <div className="relative flex-1 min-w-[10rem]">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar empresa o nota…"
+            <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder={empresa ? 'Buscar en las notas…' : 'Buscar empresa o nota…'}
               className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
           </div>
         </div>
       </div>
 
+      {resumen && (
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] p-5 space-y-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Building2 className="w-4 h-4 text-slate-400" />
+            {empActual ? (
+              <button onClick={() => onAbrir(empActual)} className="font-bold text-slate-900 hover:underline text-left">{empActual.nombre}</button>
+            ) : (
+              <span className="font-bold text-slate-400 line-through" title="Empresa eliminada">{empresa.nombre}</span>
+            )}
+            {empActual && (
+              <span className={`px-1.5 py-0.5 rounded border text-xs font-medium ${estadoDe(empActual.estado).color}`}>{estadoDe(empActual.estado).label}</span>
+            )}
+            {empActual && <span className="text-xs text-slate-500">· Responsable: {empActual.responsable ? nombreDe(empActual.responsable) : 'sin asignar'}</span>}
+          </div>
+          {resumen.total === 0 ? (
+            <p className="text-sm text-slate-400">{persona ? 'Esta persona no ha registrado' : 'Nadie ha registrado todavía'} ningún contacto con esta empresa.</p>
+          ) : (
+            <>
+              <p className="text-sm text-slate-600">
+                <strong className="text-slate-900">{resumen.total}</strong> contacto{resumen.total !== 1 ? 's' : ''} registrado{resumen.total !== 1 ? 's' : ''}
+                {resumen.total > 1 && <> · primero el {fechaHora(resumen.primero.creado)}</>}
+                {' '}· último el {fechaHora(resumen.ultimo.creado)}
+              </p>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-slate-400">
+                    <th className="font-medium pb-1">Persona</th>
+                    <th className="font-medium pb-1 text-right">Contactos</th>
+                    <th className="font-medium pb-1 pl-3">Último</th>
+                    <th className="font-medium pb-1 pl-3 hidden sm:table-cell">Cómo</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {resumen.personas.map((p) => (
+                    <tr key={p.ultimo.usuario_id}>
+                      <td className="py-1.5 text-slate-800">{p.nombre}</td>
+                      <td className="py-1.5 text-right tabular-nums">{p.n}</td>
+                      <td className="py-1.5 pl-3 text-slate-600 whitespace-nowrap">{fechaHora(p.ultimo.creado)}</td>
+                      <td className="py-1.5 pl-3 hidden sm:table-cell">
+                        {p.ultimo.accion === 'estado' && p.ultimo.estado_nuevo
+                          ? <span className={`px-1.5 py-0.5 rounded border text-xs font-medium ${estadoDe(p.ultimo.estado_nuevo).color}`}>{estadoDe(p.ultimo.estado_nuevo).label}</span>
+                          : <span className="text-xs text-slate-500">Nota</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      )}
+
       {err && <p className="text-sm text-rose-600">{err}</p>}
       {filas === null ? (
         <p className="text-sm text-slate-400 px-1">Cargando…</p>
       ) : porDia.length === 0 ? (
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-10 text-center text-sm text-slate-400">No hay cambios en este periodo.</div>
+        empresa ? null : <div className="bg-white rounded-2xl border border-slate-200/80 p-10 text-center text-sm text-slate-400">No hay cambios en este periodo.</div>
       ) : porDia.map(({ dia, items }) => (
         <div key={dia}>
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide px-1 mb-2 first-letter:uppercase">
@@ -2487,6 +2620,13 @@ function Seguimiento({ users, companies, version, onAbrir }) {
                       <button onClick={() => onAbrir(emp)} className="font-semibold text-slate-900 hover:underline text-left">{h.empresa_nombre || emp.nombre}</button>
                     ) : (
                       <span className="font-semibold text-slate-400 line-through" title="Empresa eliminada">{h.empresa_nombre || '(empresa eliminada)'}</span>
+                    )}
+                    {!empresa && (
+                      <button onClick={() => elegirEmpresa(h.empresa_id, h.empresa_nombre || emp?.nombre || '(empresa eliminada)')}
+                        title="Ver todo el seguimiento de esta empresa"
+                        className="p-0.5 rounded text-slate-400 hover:text-blue-700 hover:bg-blue-50">
+                        <History className="w-3.5 h-3.5" />
+                      </button>
                     )}
                     {h.accion === 'estado' && h.estado_nuevo ? (
                       <span className={`px-1.5 py-0.5 rounded border text-xs font-medium ${estadoDe(h.estado_nuevo).color}`}>
@@ -2777,7 +2917,7 @@ export default function App() {
         ) : tab === 'reuniones' ? (
           <Reuniones me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin || !!me.secretaria} baremo={baremo} />
         ) : tab === 'seguimiento' && isAdmin ? (
-          <Seguimiento users={usersCentro} companies={companies} version={claveEmpresas} onAbrir={setModal} />
+          <Seguimiento users={usersCentro} companies={companies} nombreDe={nombreDe} version={claveEmpresas} onAbrir={setModal} />
         ) : tab === 'equipo' && isAdmin ? (
           <Equipo users={usersCentro} centro={miCentro} isSuper={isSuper} centros={centros} companies={companies} me={me} baremo={baremo} onChanged={cargar} />
         ) : (
