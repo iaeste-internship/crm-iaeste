@@ -4,6 +4,7 @@ import {
   Building2, Plus, Search, LogOut, Pencil, Trash2, X, ChevronRight,
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
   History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
+  Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -138,6 +139,15 @@ const QUINCENA = {
 const SIN_MOVER = {
   dias: 7,
   estados: ['no_contesta', 'mail_enviado', 'interesados', 'segundo_plazo'],
+}
+// «hace 12 días» a partir de la fecha del último contacto (nota o cambio de estado)
+const haceCuanto = (iso) => {
+  if (!iso) return 'sin contactos registrados'
+  const d = Math.floor((new Date(isoDia(new Date())) - new Date(isoDia(new Date(iso)))) / 864e5)
+  if (d <= 0) return 'contactada hoy'
+  if (d === 1) return 'contactada ayer'
+  if (d < 60) return `hace ${d} días`
+  return `hace ${Math.round(d / 30)} meses`
 }
 const isoDia = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 const diaMas = (iso, n) => { const d = new Date(iso + 'T00:00:00'); d.setDate(d.getDate() + n); return isoDia(d) }
@@ -2654,6 +2664,486 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
   )
 }
 
+// ---------- Descargar un CSV (se abre en Excel) ----------
+function descargarCsv(nombre, cab, filas) {
+  const csv = [cab, ...filas]
+    .map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';'))
+    .join('\n')
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${nombre}-${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// ---------- Mejoras: buzón de ideas para el CRM ----------
+// Cualquiera propone; los admins generales marcan en qué estado está cada idea y pueden responder.
+const ESTADOS_MEJORA = [
+  { id: 'nueva', label: 'Nueva', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+  { id: 'en_marcha', label: 'En marcha', color: 'bg-amber-50 text-amber-800 border-amber-300' },
+  { id: 'hecha', label: 'Hecha', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  { id: 'descartada', label: 'Descartada', color: 'bg-slate-100 text-slate-500 border-slate-200' },
+]
+const estadoMejora = (id) => ESTADOS_MEJORA.find((e) => e.id === id) || ESTADOS_MEJORA[0]
+
+// Botón de la cabecera; a los admins generales les marca cuántas ideas nuevas hay sin revisar
+function BotonMejoras({ me, onAbrir, version }) {
+  const [nuevas, setNuevas] = useState(0)
+  useEffect(() => {
+    if (me.rol !== 'superadmin') return
+    supabase.from('mejoras').select('id', { count: 'exact', head: true }).eq('estado', 'nueva')
+      .then(({ count }) => setNuevas(count || 0))
+  }, [me.rol, version])
+  return (
+    <button onClick={onAbrir} title="Ideas de mejora para el CRM"
+      className="relative p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white">
+      <Lightbulb className="w-4 h-4" />
+      {nuevas > 0 && (
+        <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-400 text-[#0d2b45] text-[10px] font-bold flex items-center justify-center">{nuevas}</span>
+      )}
+    </button>
+  )
+}
+
+function Mejoras({ me, onClose, onChanged }) {
+  const [lista, setLista] = useState(null)
+  const [texto, setTexto] = useState('')
+  const [ver, setVer] = useState('abiertas') // 'abiertas' | 'cerradas'
+  const [err, setErr] = useState('')
+  const [ok, setOk] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [respuestas, setRespuestas] = useState({})
+  const [recarga, setRecarga] = useState(0)
+  const gestiona = me.rol === 'superadmin'
+
+  useEffect(() => {
+    let vivo = true
+    supabase.from('mejoras').select('*').order('creado', { ascending: false }).then(({ data, error }) => {
+      if (!vivo) return
+      if (error) setErr(/relation|schema cache|does not exist/i.test(error.message) ? 'Falta ejecutar migracion_intercambios_mejoras.sql en Supabase.' : error.message)
+      setLista(data || [])
+    })
+    return () => { vivo = false }
+  }, [recarga])
+
+  const hacer = async (fn, msg) => {
+    setBusy(true); setErr(''); setOk('')
+    const { error } = await fn()
+    setBusy(false)
+    if (error) { setErr(error.message); return false }
+    if (msg) setOk(msg)
+    setRecarga((r) => r + 1); onChanged?.()
+    return true
+  }
+  const enviar = async () => {
+    const t = texto.trim()
+    if (t.length < 3) { setErr('Cuéntanos un poco más la idea.'); return }
+    if (await hacer(() => supabase.from('mejoras').insert({ usuario_id: me.id, texto: t.slice(0, 1000) }), '¡Gracias! Idea enviada ✓')) setTexto('')
+  }
+
+  const abiertas = (lista || []).filter((m) => m.estado === 'nueva' || m.estado === 'en_marcha')
+  const cerradas = (lista || []).filter((m) => m.estado === 'hecha' || m.estado === 'descartada')
+  const mostradas = ver === 'abiertas' ? abiertas : cerradas
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="w-full max-w-lg max-h-[90vh] flex flex-col bg-white rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="p-5 pb-3 space-y-3 border-b border-slate-100">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-slate-900 flex items-center gap-2"><Lightbulb className="w-4 h-4 text-amber-500" />Ideas de mejora</h2>
+              <p className="text-xs text-slate-500 mt-0.5">¿Echas algo en falta en el CRM o hay algo que te estorba? Apúntalo aquí y lo vamos implementando.</p>
+            </div>
+            <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+          </div>
+          <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} maxLength={1000}
+            placeholder="Ej.: que en Seguimiento activo salgan primero las empresas que hace más tiempo que no llamamos"
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30 focus:border-[#0e2d4d]" />
+          <div className="flex items-center gap-2">
+            {err && <p className="text-xs text-rose-600 flex-1">{err}</p>}
+            {ok && !err && <p className="text-xs text-emerald-700 flex-1">{ok}</p>}
+            <span className="flex-1" />
+            <Btn onClick={enviar} disabled={busy || !texto.trim()}><Send className="w-4 h-4" />Enviar idea</Btn>
+          </div>
+        </div>
+
+        <div className="px-5 pt-3 flex gap-1.5">
+          {[['abiertas', `Pendientes · ${abiertas.length}`], ['cerradas', `Hechas o descartadas · ${cerradas.length}`]].map(([id, label]) => (
+            <button key={id} onClick={() => setVer(id)}
+              className={`px-3 py-1 rounded-full text-xs font-medium border ${ver === id ? 'bg-[#0e2d4d] text-white border-[#0e2d4d]' : 'bg-white text-slate-600 border-slate-200'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <ul className="flex-1 overflow-y-auto p-5 pt-3 space-y-2">
+          {lista === null ? <li className="text-sm text-slate-400">Cargando…</li>
+            : mostradas.length === 0 ? <li className="text-sm text-slate-400">{ver === 'abiertas' ? 'No hay ideas pendientes. ¡Lanza la primera!' : 'Todavía no hay ninguna cerrada.'}</li>
+            : mostradas.map((m) => {
+              const e = estadoMejora(m.estado)
+              const mia = m.usuario_id === me.id
+              return (
+                <li key={m.id} className="rounded-xl border border-slate-200 p-3 text-sm">
+                  <div className="flex items-start gap-2">
+                    <p className="flex-1 text-slate-800 whitespace-pre-wrap break-words">{m.texto}</p>
+                    <span className={`shrink-0 px-1.5 py-0.5 rounded border text-[11px] font-medium ${e.color}`}>{e.label}</span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {mia ? 'Tú' : (m.usuario_nombre || 'Alguien')}{m.centro ? ` · ${m.centro}` : ''} · {fecha(m.creado)}
+                    {(gestiona || (mia && m.estado === 'nueva')) && (
+                      <button onClick={() => confirm('¿Borrar esta idea?') && hacer(() => supabase.from('mejoras').delete().eq('id', m.id))}
+                        disabled={busy} className="ml-2 underline hover:text-rose-600">borrar</button>
+                    )}
+                  </p>
+                  {m.respuesta && <p className="mt-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600"><strong>Respuesta:</strong> {m.respuesta}</p>}
+                  {gestiona && (
+                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                      {ESTADOS_MEJORA.filter((x) => x.id !== m.estado).map((x) => (
+                        <button key={x.id} disabled={busy}
+                          onClick={() => hacer(() => supabase.from('mejoras').update({ estado: x.id }).eq('id', m.id))}
+                          className="px-2 py-0.5 rounded-full border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">
+                          → {x.label}
+                        </button>
+                      ))}
+                      <input value={respuestas[m.id] ?? m.respuesta ?? ''} maxLength={500}
+                        onChange={(ev) => setRespuestas({ ...respuestas, [m.id]: ev.target.value })}
+                        placeholder="Responder…"
+                        className="flex-1 min-w-[8rem] px-2 py-1 rounded-lg border border-slate-200 text-xs" />
+                      {respuestas[m.id] !== undefined && respuestas[m.id] !== (m.respuesta || '') && (
+                        <button disabled={busy}
+                          onClick={() => hacer(() => supabase.from('mejoras').update({ respuesta: respuestas[m.id].trim() || null }).eq('id', m.id), 'Respuesta guardada ✓')}
+                          className="px-2 py-1 rounded-lg bg-[#0e2d4d] text-white text-[11px] font-semibold">Guardar</button>
+                      )}
+                    </div>
+                  )}
+                </li>
+              )
+            })}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+// ---------- Intercambios: incomings y outgoings ----------
+// Quién se va de prácticas fuera (outgoing), quién viene (incoming), adónde y cuándo.
+// Los outgoings los ve todo el comité del centro; los incomings, solo los admins. Lo gestionan los admins.
+// (La base de datos también lo impone: a un miembro no le llegan las filas de incomings.)
+const TIPOS_INTER = {
+  outgoing: {
+    label: 'Outgoings', sing: 'outgoing', Icono: PlaneTakeoff,
+    desc: 'Gente de aquí que se va de prácticas al extranjero.',
+    pais: 'País de destino', org: 'Empresa / institución de acogida', inicio: 'Se va', fin: 'Vuelve',
+    encargado: 'Persona de contacto en el comité', ahora: 'Fuera ahora', pronto: 'Se van en 30 días',
+  },
+  incoming: {
+    label: 'Incomings', sing: 'incoming', Icono: PlaneLanding,
+    desc: 'Trainees de otros países que vienen a hacer prácticas con nosotros.',
+    pais: 'País de origen', org: 'Empresa donde hace las prácticas', inicio: 'Llega', fin: 'Se va',
+    encargado: 'Buddy / responsable', ahora: 'Aquí ahora', pronto: 'Llegan en 30 días',
+  },
+}
+const ESTADOS_INTER = [
+  { id: 'nominado', label: 'Nominado', color: 'bg-slate-100 text-slate-600 border-slate-200' },
+  { id: 'aceptado', label: 'Aceptado', color: 'bg-blue-50 text-blue-700 border-blue-200' },
+  { id: 'tramites', label: 'Papeles / visado', color: 'bg-amber-50 text-amber-800 border-amber-300' },
+  { id: 'listo', label: 'Todo listo', color: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  { id: 'cancelado', label: 'Cancelado', color: 'bg-rose-50 text-rose-700 border-rose-200 line-through' },
+]
+const estadoInter = (id) => ESTADOS_INTER.find((e) => e.id === id) || ESTADOS_INTER[0]
+// En qué momento está, según las fechas
+const faseInter = (x, hoy) =>
+  x.estado === 'cancelado' ? 'cancelado'
+    : !x.inicio ? 'sin_fechas'
+      : hoy < x.inicio ? 'proximo'
+        : x.fin && hoy > x.fin ? 'terminado'
+          : 'en_curso'
+const diasEntre = (a, b) => Math.round((new Date(b + 'T00:00:00') - new Date(a + 'T00:00:00')) / 864e5)
+const fechaInter = (iso) => iso ? new Date(iso + 'T00:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : '¿?'
+const mesInter = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('es-ES', { month: 'long', year: 'numeric' })
+
+const INTER_VACIO = { nombre: '', email: '', telefono: '', pais: '', ciudad: '', organizacion: '', referencia: '', inicio: '', fin: '', estado: 'nominado', alojamiento: '', encargado: '', notas: '' }
+
+function FichaIntercambio({ inter, tipo, centro, users, me, puedeGestionar, onSaved, onClose }) {
+  const t = TIPOS_INTER[tipo]
+  const [f, setF] = useState(() => inter ? { ...INTER_VACIO, ...Object.fromEntries(Object.entries(inter).map(([k, v]) => [k, v ?? ''])) } : { ...INTER_VACIO })
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+  const lectura = !puedeGestionar
+
+  const guardar = async () => {
+    if (!f.nombre.trim()) { setErr('Falta el nombre.'); return }
+    if (f.inicio && f.fin && f.fin < f.inicio) { setErr(`La fecha de «${t.fin}» no puede ser anterior a la de «${t.inicio}».`); return }
+    const datos = {
+      nombre: f.nombre.trim().slice(0, 120), email: f.email.trim() || null, telefono: f.telefono.trim() || null,
+      pais: f.pais.trim() || null, ciudad: f.ciudad.trim() || null, organizacion: f.organizacion.trim() || null,
+      referencia: f.referencia.trim() || null, inicio: f.inicio || null, fin: f.fin || null, estado: f.estado,
+      alojamiento: f.alojamiento.trim() || null, encargado: f.encargado || null, notas: f.notas.trim() || null,
+      actualizado_por: me.nombre,
+    }
+    setBusy(true); setErr('')
+    const { error } = inter
+      ? await supabase.from('intercambios').update(datos).eq('id', inter.id)
+      : await supabase.from('intercambios').insert({ ...datos, tipo, centro })
+    setBusy(false)
+    if (error) { setErr(error.message); return }
+    onSaved(inter ? 'Guardado ✓' : `${t.sing.charAt(0).toUpperCase() + t.sing.slice(1)} añadido ✓`)
+  }
+  const borrar = async () => {
+    if (!confirm(`¿Borrar a ${inter.nombre} de los ${t.label.toLowerCase()}? Si solo se ha caído, mejor márcalo como «Cancelado».`)) return
+    setBusy(true)
+    const { error } = await supabase.from('intercambios').delete().eq('id', inter.id)
+    setBusy(false)
+    if (error) { setErr(error.message); return }
+    onSaved('Borrado')
+  }
+
+  const campo = (k, label, props = {}) => (
+    <div className={props.full ? 'sm:col-span-2' : ''}>
+      <Label>{label}</Label>
+      <Input value={f[k]} onChange={set(k)} disabled={lectura} type={props.type || 'text'} placeholder={props.placeholder} />
+    </div>
+  )
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-bold text-slate-900 flex items-center gap-2">
+            <t.Icono className="w-4 h-4 text-slate-400" />
+            {inter ? inter.nombre : `Nuevo ${t.sing}`}
+          </h2>
+          <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          {campo('nombre', 'Nombre y apellidos', { full: true })}
+          {campo('email', 'Email', { type: 'email' })}
+          {campo('telefono', 'Teléfono')}
+          {campo('pais', t.pais)}
+          {campo('ciudad', 'Ciudad')}
+          {campo('organizacion', t.org, { full: true })}
+          {campo('referencia', 'Ref. de la oferta', { placeholder: 'p. ej. IN-2026-1172' })}
+          <div>
+            <Label>Estado</Label>
+            <select value={f.estado} onChange={set('estado')} disabled={lectura}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white">
+              {ESTADOS_INTER.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+            </select>
+          </div>
+          {campo('inicio', t.inicio, { type: 'date' })}
+          {campo('fin', t.fin, { type: 'date' })}
+          {tipo === 'incoming' && campo('alojamiento', 'Alojamiento', { full: true, placeholder: 'Residencia, piso, dirección…' })}
+          <div className="sm:col-span-2">
+            <Label>{t.encargado}</Label>
+            <select value={f.encargado} onChange={set('encargado')} disabled={lectura}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white">
+              <option value="">Nadie todavía</option>
+              <OpcionesPersonas users={users} />
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Notas</Label>
+            <textarea value={f.notas} onChange={set('notas')} disabled={lectura} rows={3}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+          </div>
+        </div>
+        {inter?.actualizado && <p className="text-xs text-slate-400">Última actualización: {fecha(inter.actualizado)}{inter.actualizado_por ? ` · ${inter.actualizado_por}` : ''}</p>}
+        {err && <p className="text-sm text-rose-600">{err}</p>}
+        {puedeGestionar ? (
+          <div className="flex gap-2 justify-end">
+            {inter && <Btn variant="danger" onClick={borrar} disabled={busy} className="mr-auto"><Trash2 className="w-4 h-4" /></Btn>}
+            <Btn variant="ghost" onClick={onClose}>Cancelar</Btn>
+            <Btn onClick={guardar} disabled={busy}><Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}</Btn>
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400">Solo los admins pueden cambiar estos datos.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function Intercambios({ me, users, centro, puedeGestionar }) {
+  const [tipo, setTipo] = useState('outgoing')
+  const [lista, setLista] = useState(null)
+  const [err, setErr] = useState('')
+  const [busca, setBusca] = useState('')
+  const [abierto, setAbierto] = useState(null) // null | 'nuevo' | fila
+  const [verPasados, setVerPasados] = useState(false)
+  const [aviso, setAviso] = useState('')
+  const [recarga, setRecarga] = useState(0)
+
+  useEffect(() => {
+    let vivo = true
+    setLista(null)
+    supabase.from('intercambios').select('*').eq('centro', centro).order('inicio', { ascending: true, nullsFirst: false }).order('nombre')
+      .then(({ data, error }) => {
+        if (!vivo) return
+        setErr(error ? (/relation|schema cache|does not exist/i.test(error.message) ? 'Falta ejecutar migracion_intercambios_mejoras.sql en Supabase.' : error.message) : '')
+        setLista(data || [])
+      })
+    return () => { vivo = false }
+  }, [centro, recarga])
+
+  // Los incomings solo los ven los admins
+  const tiposVisibles = Object.entries(TIPOS_INTER).filter(([id]) => puedeGestionar || id === 'outgoing')
+  const tipoEf = tiposVisibles.some(([id]) => id === tipo) ? tipo : 'outgoing'
+  const t = TIPOS_INTER[tipoEf]
+  const hoy = HOY()
+  const en30 = sumarDias(30)
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre || ''
+  const delTipo = (lista || []).filter((x) => x.tipo === tipoEf)
+  const q = busca.trim().toLowerCase()
+  const filtrados = delTipo.filter((x) => !q || [x.nombre, x.pais, x.ciudad, x.organizacion, x.referencia, nombre(x.encargado)]
+    .some((v) => (v || '').toLowerCase().includes(q)))
+  const porFase = (fase) => filtrados.filter((x) => faseInter(x, hoy) === fase)
+  const enCurso = porFase('en_curso')
+  const proximos = porFase('proximo')
+  const sinFechas = porFase('sin_fechas')
+  const pasados = [...porFase('terminado'), ...porFase('cancelado')].sort((a, b) => (b.inicio || '').localeCompare(a.inicio || ''))
+  const nAhora = delTipo.filter((x) => faseInter(x, hoy) === 'en_curso').length
+  const nPronto = delTipo.filter((x) => faseInter(x, hoy) === 'proximo' && x.inicio <= en30).length
+  // Próximos agrupados por el mes en que se van / llegan
+  const porMes = []
+  for (const x of proximos) {
+    const m = x.inicio.slice(0, 7)
+    if (!porMes.length || porMes[porMes.length - 1].mes !== m) porMes.push({ mes: m, items: [] })
+    porMes[porMes.length - 1].items.push(x)
+  }
+
+  const exportar = () => descargarCsv(`${tipoEf}s-iaeste-${centro}`,
+    ['Nombre', 'Email', 'Telefono', t.pais, 'Ciudad', t.org, 'Referencia', t.inicio, t.fin, 'Estado', ...(tipoEf === 'incoming' ? ['Alojamiento'] : []), t.encargado, 'Notas'],
+    delTipo.map((x) => [x.nombre, x.email, x.telefono, x.pais, x.ciudad, x.organizacion, x.referencia, x.inicio, x.fin, estadoInter(x.estado).label,
+      ...(tipoEf === 'incoming' ? [x.alojamiento] : []), nombre(x.encargado), (x.notas || '').replace(/\n/g, ' | ')]))
+
+  const Fila = ({ x }) => {
+    const fase = faseInter(x, hoy)
+    const e = estadoInter(x.estado)
+    const cuando = fase === 'proximo' ? `${tipoEf === 'outgoing' ? 'se va' : 'llega'} en ${diasEntre(hoy, x.inicio)} días`
+      : fase === 'en_curso' && x.fin ? `${tipoEf === 'outgoing' ? 'vuelve' : 'se va'} en ${diasEntre(hoy, x.fin)} días`
+        : fase === 'en_curso' ? 'sin fecha de fin' : ''
+    const semanas = x.inicio && x.fin ? Math.max(1, Math.round((diasEntre(x.inicio, x.fin) + 1) / 7)) : null
+    return (
+      <button onClick={() => setAbierto(x)} className={`w-full flex items-center gap-4 px-5 py-3.5 text-left hover:bg-slate-50 ${fase === 'cancelado' || fase === 'terminado' ? 'opacity-70' : ''}`}>
+        <div className="flex-1 min-w-0">
+          <p className="font-medium text-slate-900 truncate">{x.nombre}</p>
+          <p className="text-xs text-slate-500 truncate">
+            {[[x.ciudad, x.pais].filter(Boolean).join(', '), x.organizacion, x.referencia].filter(Boolean).join(' · ') || '—'}
+          </p>
+          {x.encargado && <p className="text-xs text-slate-400 truncate"><User className="w-3 h-3 inline -mt-0.5 mr-0.5" />{nombre(x.encargado) || 'Alguien de otro centro'}</p>}
+        </div>
+        <div className="text-right shrink-0">
+          <p className="text-xs text-slate-700 tabular-nums whitespace-nowrap">
+            {x.inicio || x.fin ? <>{fechaInter(x.inicio)} → {fechaInter(x.fin)}</> : <span className="text-amber-700">Faltan fechas</span>}
+          </p>
+          <p className="text-[11px] text-slate-400 whitespace-nowrap">{[cuando, semanas ? `${semanas} sem.` : ''].filter(Boolean).join(' · ')}</p>
+        </div>
+        <span className={`hidden sm:inline-flex shrink-0 px-2 py-0.5 rounded-full border text-xs font-medium ${e.color}`}>{e.label}</span>
+        <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+      </button>
+    )
+  }
+  const Bloque = ({ titulo, items, nota }) => items.length === 0 ? null : (
+    <div>
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide px-1 mb-2 first-letter:uppercase">
+        {titulo} <span className="text-slate-400 font-normal normal-case">· {items.length}{nota ? ` · ${nota}` : ''}</span>
+      </p>
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden divide-y divide-slate-100">
+        {items.map((x) => <Fila key={x.id} x={x} />)}
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)]">
+        <h2 className="text-lg font-bold flex items-center gap-2"><PlaneTakeoff className="w-5 h-5 text-teal-300" />Intercambios · {centro}</h2>
+        <p className="mt-1 text-sm text-white/75">
+          Quién se va, quién viene y cuándo. {puedeGestionar ? 'Pulsa en una persona para actualizar sus datos.' : 'Si ves algo que no cuadra, avisa a un admin.'}
+        </p>
+        {tiposVisibles.length > 1 && <div className="mt-4 flex gap-1.5 bg-white/10 rounded-full p-1 w-fit">
+          {tiposVisibles.map(([id, x]) => (
+            <button key={id} onClick={() => { setTipo(id); setVerPasados(false) }}
+              className={`inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-sm transition-colors ${tipoEf === id ? 'bg-white text-[#0e2d4d] font-bold' : 'text-white/85 font-medium hover:bg-white/[0.08]'}`}>
+              <x.Icono className="w-4 h-4" />{x.label}
+              <span className={tipoEf === id ? 'text-[#0e2d4d]/50' : 'text-white/50'}>· {(lista || []).filter((y) => y.tipo === id && y.estado !== 'cancelado').length}</span>
+            </button>
+          ))}
+        </div>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{t.ahora}</p>
+          <p className="text-2xl font-bold text-slate-900 tabular-nums">{nAhora}</p>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200/80 p-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{t.pronto}</p>
+          <p className="text-2xl font-bold text-slate-900 tabular-nums">{nPronto}</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap sm:flex-nowrap gap-2">
+        <div className="relative flex-1 basis-full sm:basis-auto">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <Input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar persona, país, empresa o referencia…" className="pl-9" />
+        </div>
+        {puedeGestionar && (
+          <button onClick={exportar} title="Exportar a Excel"
+            className="px-3 py-2 rounded-lg border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1.5">
+            <FileSpreadsheet className="w-4 h-4" /><span className="hidden lg:inline">Exportar</span>
+          </button>
+        )}
+        {puedeGestionar && <Btn onClick={() => setAbierto('nuevo')}><Plus className="w-4 h-4" /><span className="hidden sm:inline">Añadir {t.sing}</span></Btn>}
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+      {aviso && <p className="text-sm text-emerald-700">{aviso}</p>}
+
+      {lista === null ? <p className="text-sm text-slate-400 px-1">Cargando…</p>
+        : delTipo.length === 0 ? (
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-10 text-center text-sm text-slate-400">
+            {t.desc} Todavía no hay ninguno{puedeGestionar ? `: añade el primero con «Añadir ${t.sing}».` : '.'}
+          </div>
+        ) : (
+          <>
+            <Bloque titulo={tipoEf === 'outgoing' ? 'Fuera ahora' : 'Aquí ahora'} items={enCurso} />
+            {porMes.map(({ mes, items }) => (
+              <Bloque key={mes} titulo={`${tipoEf === 'outgoing' ? 'Se van' : 'Llegan'} en ${mesInter(mes + '-01')}`} items={items} />
+            ))}
+            <Bloque titulo="Sin fechas todavía" items={sinFechas} nota="ponles fecha en cuanto se sepa" />
+            {pasados.length > 0 && (
+              <div>
+                <button onClick={() => setVerPasados(!verPasados)} className="text-xs font-semibold text-slate-500 uppercase tracking-wide px-1 mb-2 inline-flex items-center gap-1">
+                  <ChevronRight className={`w-3.5 h-3.5 transition-transform ${verPasados ? 'rotate-90' : ''}`} />
+                  Terminados y cancelados <span className="text-slate-400 font-normal normal-case">· {pasados.length}</span>
+                </button>
+                {verPasados && (
+                  <div className="bg-white rounded-2xl border border-slate-200/80 overflow-hidden divide-y divide-slate-100">
+                    {pasados.map((x) => <Fila key={x.id} x={x} />)}
+                  </div>
+                )}
+              </div>
+            )}
+            {filtrados.length === 0 && <p className="text-sm text-slate-400 px-1">Nadie coincide con la búsqueda.</p>}
+          </>
+        )}
+
+      {abierto && (
+        <FichaIntercambio
+          inter={abierto === 'nuevo' ? null : abierto}
+          tipo={abierto === 'nuevo' ? tipoEf : abierto.tipo}
+          centro={centro} users={users} me={me} puedeGestionar={puedeGestionar}
+          onClose={() => setAbierto(null)}
+          onSaved={(m) => { setAbierto(null); setAviso(m); setTimeout(() => setAviso(''), 3000); setRecarga((r) => r + 1) }}
+        />
+      )}
+    </div>
+  )
+}
+
 // ---------- Exportar empresas a CSV (se abre en Excel) ----------
 function exportarEmpresas(lista, nombreDe) {
   const cab = ['Empresa', 'CIF', 'Sector', 'Contacto', 'Telefono', 'Email', 'Direccion', 'Practicas', 'Estado', 'Responsable', 'Proximo contacto', 'Notas']
@@ -2662,16 +3152,7 @@ function exportarEmpresas(lista, nombreDe) {
     estadoDe(c.estado).label, nombreDe(c.responsable), c.proximo_contacto || '',
     (c.notas || '').replace(/\n/g, ' | '),
   ])
-  const csv = [cab, ...filas]
-    .map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';'))
-    .join('\n')
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `empresas-iaeste-${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
+  descargarCsv('empresas-iaeste', cab, filas)
 }
 
 // ---------- App ----------
@@ -2709,7 +3190,9 @@ export default function App() {
   const [modal, setModal] = useState(null) // null | 'nueva' | empresa
   const [aviso, setAviso] = useState('')
   const [cambiarPass, setCambiarPass] = useState('') // '' | 'normal' | 'recuperacion'
-  const [movidas, setMovidas] = useState(null) // ids de empresas con nota o cambio de estado en los últimos SIN_MOVER.dias
+  const [ultimos, setUltimos] = useState(null) // Map empresa_id → fecha (ISO) de su última nota o cambio de estado
+  const [orden, setOrden] = useState('') // '' = automático | 'antiguedad' | 'nombre'
+  const [mejorasAbierto, setMejorasAbierto] = useState(false)
   const [centros, setCentros] = useState([])
   const [vista, setVista] = useState('') // '' = mi centro | id de otro centro (solo lectura) | BOTE
   const [centroSel, setCentroSel] = useState('') // admin general: centro que está gestionando
@@ -2747,23 +3230,30 @@ export default function App() {
 
   useEffect(() => { cargar() }, [cargar])
 
-  // Para el aviso «Realizar seguimiento»: qué empresas han tenido nota o cambio de estado hace poco.
+  // Último contacto de cada empresa (su nota o cambio de estado más reciente): sirve para ordenar
+  // por «más tiempo sin contactar» y para el aviso «Realizar seguimiento».
   // Se vuelve a calcular cada vez que cambian las empresas (al guardar una ficha, etc.).
   const claveEmpresas = companies.map((c) => `${c.id}:${c.estado}:${c.actualizado || ''}`).join('|')
   useEffect(() => {
     if (!session) return
     let vivo = true
-    const desde = new Date(Date.now() - SIN_MOVER.dias * 864e5).toISOString()
     traerTodo(() => supabase
       .from('historial')
-      .select('id, empresa_id')
+      .select('id, empresa_id, creado')
       .in('accion', ['nota', 'estado'])
-      .gte('creado', desde)
       .order('id'))
-      .then((filas) => vivo && setMovidas(new Set(filas.map((h) => h.empresa_id))))
-      .catch(() => vivo && setMovidas(null))
+      .then((filas) => {
+        if (!vivo) return
+        const m = new Map()
+        for (const h of filas) if (!m.has(h.empresa_id) || h.creado > m.get(h.empresa_id)) m.set(h.empresa_id, h.creado)
+        setUltimos(m)
+      })
+      .catch(() => vivo && setUltimos(null))
     return () => { vivo = false }
   }, [session, claveEmpresas])
+  const desdeSinMover = new Date(Date.now() - SIN_MOVER.dias * 864e5).toISOString()
+  const movidas = ultimos && new Set([...ultimos].filter(([, f]) => f >= desdeSinMover).map(([id]) => id))
+  const ultimoDe = (c) => ultimos?.get(c.id) || null
 
   const flash = (m, ms = 2500) => { setAviso(m); setTimeout(() => setAviso(''), ms) }
 
@@ -2856,8 +3346,15 @@ export default function App() {
       return [c.nombre, c.contacto, c.sector, c.cif, c.direccion, c.email, c.responsable ? nombreDe(c.responsable) : '']
         .some((v) => (v || '').toLowerCase().includes(q)) || (qCif.length >= 4 && cifNorm(c.cif).includes(qCif))
     })
+  // Orden: en «Seguimiento activo» y en los avisos, primero las que hace más tiempo que nadie contacta
+  // (la que se llamó por última vez, abajo del todo). En el resto, por nombre. Se puede cambiar a mano.
+  const ordenAuto = (grupoEf === 'activo' || (agenda && agendaVisible)) ? 'antiguedad' : 'nombre'
+  const ordenEf = orden || ordenAuto
+  if (ordenEf === 'antiguedad') {
+    visibles.sort((a, b) => (ultimoDe(a) || '').localeCompare(ultimoDe(b) || '') || a.nombre.localeCompare(b.nombre, 'es'))
+  }
 
-  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
+  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
     <button
       key={id}
       onClick={() => setTab(id)}
@@ -2890,6 +3387,7 @@ export default function App() {
                 <div className="hidden sm:flex w-8 h-8 rounded-full bg-white text-[#0d2b45] font-bold text-sm items-center justify-center" title={me.nombre}>
                   {(me.nombre || '?').trim().charAt(0).toUpperCase()}
                 </div>
+                <BotonMejoras me={me} onAbrir={() => setMejorasAbierto(true)} version={mejorasAbierto} />
                 <button
                   onClick={() => setCambiarPass('normal')}
                   title="Cambiar mi contraseña"
@@ -2914,6 +3412,8 @@ export default function App() {
       <main className="max-w-5xl mx-auto px-4 py-6">
         {tab === 'ranking' ? (
           <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} centro={miCentro} />
+        ) : tab === 'intercambios' ? (
+          <Intercambios me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin} />
         ) : tab === 'reuniones' ? (
           <Reuniones me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin || !!me.secretaria} baremo={baremo} />
         ) : tab === 'seguimiento' && isAdmin ? (
@@ -3017,7 +3517,7 @@ export default function App() {
                 return (
                   <button
                     key={g.id}
-                    onClick={() => { setGrupo(g.id); setFiltroEstado('') }}
+                    onClick={() => { setGrupo(g.id); setFiltroEstado(''); setOrden('') }}
                     className={`shrink-0 whitespace-nowrap px-4 py-2 rounded-full text-sm transition-colors ${
                       grupoEf === g.id ? 'bg-white text-[#0e2d4d] font-bold shadow-sm' : 'text-white/85 font-medium hover:bg-white/[0.08]'
                     }`}
@@ -3068,6 +3568,14 @@ export default function App() {
                 <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
                 <Input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar empresa, CIF, contacto, sector o responsable…" className="pl-9" />
               </div>
+              <label className="relative shrink-0" title="Orden de la lista">
+                <ArrowUpDown className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <select value={ordenEf} onChange={(e) => setOrden(e.target.value)}
+                  className="pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm bg-white">
+                  <option value="antiguedad">Más tiempo sin contactar primero</option>
+                  <option value="nombre">Por nombre (A-Z)</option>
+                </select>
+              </label>
               {isAdmin && (
                 <>
                   {!enBote && <select
@@ -3148,7 +3656,14 @@ export default function App() {
                         )}
                       </p>
                       <p className="text-xs text-slate-500 truncate">
-                        {[c.cif, c.sector, c.contacto].filter(Boolean).join(' · ') || '—'}
+                        {ultimos && c.estado !== 'sin_contactar' && (
+                          <span title={ultimoDe(c) ? `Último contacto: ${fecha(ultimoDe(c))}` : 'Nadie ha registrado todavía una nota ni un cambio de estado'}
+                            className={`font-medium ${ordenEf === 'antiguedad' ? 'text-[#0e2d4d]' : ''}`}>
+                            <Clock className="w-3 h-3 inline -mt-0.5 mr-0.5" />{haceCuanto(ultimoDe(c))}
+                            {(c.cif || c.sector || c.contacto) ? ' · ' : ''}
+                          </span>
+                        )}
+                        {[c.cif, c.sector, c.contacto].filter(Boolean).join(' · ') || (ultimos && c.estado !== 'sin_contactar' ? '' : '—')}
                       </p>
                     </div>
                     <span className={`hidden md:flex items-center gap-1.5 text-xs shrink-0 ${c.responsable === me.id ? 'text-[#0e2d4d] font-semibold' : 'text-slate-500'}`}>
@@ -3197,6 +3712,8 @@ export default function App() {
           onClose={() => setModal(null)}
         />
       )}
+
+      {mejorasAbierto && <Mejoras me={me} onClose={() => setMejorasAbierto(false)} />}
 
       {cambiarPass && <CambiarContrasena recuperacion={cambiarPass === 'recuperacion'} onClose={() => setCambiarPass('')} />}
 
