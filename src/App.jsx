@@ -23,8 +23,9 @@ const ESTADOS = [
 // Apartados de la lista de empresas: cada estado pertenece a uno
 const GRUPOS = [
   { id: 'disponibles', label: 'Empresas disponibles', estados: ['sin_contactar'] },
-  { id: 'activo', label: 'Seguimiento activo', estados: ['no_contesta', 'mail_enviado', 'mas_adelante', 'segundo_plazo', 'interesados'] },
-  { id: 'cerradas', label: 'Cerradas', estados: ['beca', 'rechazada', 'no_existe', 'otra_provincia'] },
+  { id: 'activo', label: 'Seguimiento activo', estados: ['no_contesta', 'mail_enviado', 'segundo_plazo', 'interesados'] },
+  // «Para más adelante» cuenta como cerrada: no se sigue llamando durante este curso
+  { id: 'cerradas', label: 'Cerradas', estados: ['beca', 'rechazada', 'no_existe', 'otra_provincia', 'mas_adelante'] },
   { id: 'historicas', label: 'Históricas', estados: null, historicas: true, soloAdmin: true },
   { id: 'todas', label: 'Todas', estados: null },
 ]
