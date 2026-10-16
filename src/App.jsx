@@ -88,6 +88,16 @@ const PUNTOS_ESTADO = {
   no_contesta: 1, mail_enviado: 1, interesados: 1, segundo_plazo: 1,   // ya contactada
   mas_adelante: 3, otra_provincia: 3, no_existe: 3, rechazada: 3, beca: 3, // cerrada (3 en total)
 }
+// Una empresa puede dar más de una beca: cuenta el nº de prácticas registradas desde el año en que
+// pasó a «Beca conseguida» (si no hay registro, las del último año apuntado; si no hay nada, 1).
+// Cada beca suma los puntos de «Beca conseguida».
+const becasDe = (c, cuando) => {
+  const filas = (c.practicas || []).filter((p) => (p.num_practicas || 0) > 0)
+  if (!filas.length) return 1
+  const desde = cuando ? new Date(cuando).getFullYear() : Math.max(...filas.map((p) => p.anio || 0))
+  const n = filas.filter((p) => (p.anio || 0) >= desde).reduce((t, p) => t + p.num_practicas, 0)
+  return Math.max(1, n || filas.filter((p) => p.anio === Math.max(...filas.map((q) => q.anio || 0))).reduce((t, p) => t + p.num_practicas, 0))
+}
 // Un seguimiento con cambio de estado deja dos filas en el historial (estado + nota) con la misma
 // hora, persona y empresa: así se emparejan en la ficha de la empresa.
 const claveSeg = (h) => `${h.empresa_id}|${h.usuario_id}|${h.creado}`
@@ -899,15 +909,20 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
         if (error) throw error
       }
       if (registrar) {
-        const { error } = await supabase.from('practicas').insert({
-          empresa_id: empresaId, anio, num_practicas: num, creado_por_nombre: me.nombre,
-        })
+        // Si ese año ya tenía prácticas, las nuevas becas se suman a las que había
+        const ya = practicas.find((p) => p.anio === anio)
+        const { error } = ya
+          ? await supabase.from('practicas').update({ num_practicas: (ya.num_practicas || 0) + num }).eq('id', ya.id)
+          : await supabase.from('practicas').insert({ empresa_id: empresaId, anio, num_practicas: num, creado_por_nombre: me.nombre })
         if (error) {
           throw new Error(error.code === '23505'
-            ? `La empresa se ha guardado, pero ya había prácticas registradas en ${anio}. Si hay que corregir el número, pídeselo a un admin.`
-            : `La empresa se ha guardado, pero no se han podido registrar las prácticas: ${error.message}`)
+            ? `La empresa se ha guardado, pero ya había prácticas registradas en ${anio}. Recarga la página y vuelve a probar.`
+            : `La empresa se ha guardado, pero no se han podido registrar las becas: ${error.message}`)
         }
-        mensaje = mensaje || `Prácticas ${anio} registradas ✓ · ya es empresa histórica`
+        const totalAnio = (ya?.num_practicas || 0) + num
+        mensaje = mensaje || (ya
+          ? `+${num} beca${num !== 1 ? 's' : ''} ✓ · ${totalAnio} en ${anio}`
+          : `${num} beca${num !== 1 ? 's' : ''} en ${anio} registrada${num !== 1 ? 's' : ''} ✓ · ya es empresa histórica`)
       }
       onSaved(mensaje)
     } catch (e) {
@@ -930,6 +945,14 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
     const { error } = await supabase.from('practicas').delete().eq('id', p.id)
     if (error) { setErr(error.message); return }
     onSaved('Registro de prácticas eliminado')
+  }
+
+  const cambiarNumBecas = async (p, delta) => {
+    const n = (p.num_practicas || 0) + delta
+    if (n < 1) { borrarPracticas(p); return }
+    const { error } = await supabase.from('practicas').update({ num_practicas: n }).eq('id', p.id)
+    if (error) { setErr(error.message); return }
+    onSaved(`${p.anio || 'Ese año'}: ${n} beca${n !== 1 ? 's' : ''}`)
   }
 
   const eliminar = async () => {
@@ -1054,7 +1077,9 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
                 <div className="flex flex-wrap gap-1.5 mt-2 pl-6">
                   {practicas.map((p) => (
                     <span key={p.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-white border border-amber-200 text-xs">
-                      {p.anio || '¿año?'}{p.num_practicas ? ` · ${p.num_practicas}` : ''}
+                      {p.anio || '¿año?'} · {p.num_practicas || 0} beca{p.num_practicas !== 1 ? 's' : ''}
+                      <button onClick={() => cambiarNumBecas(p, -1)} title="Una beca menos" className="px-1 rounded text-amber-600 hover:bg-amber-100 font-bold">−</button>
+                      <button onClick={() => cambiarNumBecas(p, 1)} title="Una beca más" className="px-1 rounded text-amber-600 hover:bg-amber-100 font-bold">+</button>
                       <button onClick={() => borrarPracticas(p)} title="Quitar este año" className="text-amber-400 hover:text-rose-600"><X className="w-3 h-3" /></button>
                     </span>
                   ))}
@@ -1126,24 +1151,28 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
           </div>
           {isAdmin && ((f.estado === 'beca' && (nueva || empresa.estado !== 'beca')) || addPrac) ? (
             <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-              <p className="text-sm font-semibold text-emerald-900 mb-2">Prácticas conseguidas</p>
+              <p className="text-sm font-semibold text-emerald-900 mb-2">Becas conseguidas</p>
               <div className="grid grid-cols-2 gap-3">
                 <div><Label>Año</Label><Input type="number" inputMode="numeric" min="1990" max="2100" value={prac.anio} onChange={(e) => setPrac((p) => ({ ...p, anio: e.target.value }))} /></div>
-                <div><Label>Nº de prácticas</Label><Input type="number" inputMode="numeric" min="1" value={prac.num} onChange={(e) => setPrac((p) => ({ ...p, num: e.target.value }))} /></div>
+                <div><Label>Nº de becas</Label><Input type="number" inputMode="numeric" min="1" value={prac.num} onChange={(e) => setPrac((p) => ({ ...p, num: e.target.value }))} /></div>
               </div>
-              <p className="text-xs text-emerald-800 mt-2">Al guardar, la empresa queda registrada como histórica con este año.</p>
+              <p className="text-xs text-emerald-800 mt-2">
+                {practicas.some((p) => p.anio === parseInt(prac.anio, 10))
+                  ? `Ya hay ${practicas.find((p) => p.anio === parseInt(prac.anio, 10)).num_practicas} en ${prac.anio}: estas se suman. Cada beca da sus puntos a quien lleva la empresa.`
+                  : 'Al guardar, la empresa queda como histórica con este año. Cada beca da sus puntos a quien lleva la empresa.'}
+              </p>
               {addPrac && (
                 <button onClick={() => setAddPrac(false)} className="text-xs text-slate-500 hover:underline mt-1">Cancelar</button>
               )}
             </div>
           ) : !isAdmin && f.estado === 'beca' && empresa?.estado !== 'beca' ? (
             <p className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-              ¡Enhorabuena! Un admin registrará el año y el número de prácticas para dejarla como empresa histórica.
+              ¡Enhorabuena! Un admin registrará el año y cuántas becas son (puede ser más de una): cada una te suma puntos.
             </p>
           ) : isAdmin && (
             <button onClick={() => setAddPrac(true)}
               className="inline-flex items-center gap-1.5 text-xs font-medium text-amber-800 hover:underline">
-              <Star className="w-3.5 h-3.5" />{practicas.length ? 'Registrar prácticas de otro año' : 'Marcar como histórica (registrar prácticas de un año)'}
+              <Star className="w-3.5 h-3.5" />{f.estado === 'beca' || practicas.length ? 'Añadir más becas' : 'Marcar como histórica (registrar prácticas de un año)'}
             </button>
           )}
           <div>
@@ -1385,10 +1414,13 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
     const dentro = cuando ? new Date(cuando) >= ini && new Date(cuando) < fin : desde <= INICIO_CURSO()
     if (!dentro) continue
     const r = de(c.responsable)
-    r.puntos += pts
+    const nBecas = c.estado === 'beca' ? becasDe(c, cuando) : 0
+    const total = nBecas > 1 ? pts * nBecas : pts
+    r.puntos += total
     if (CONTACTADAS.includes(c.estado)) r.contactadas++; else r.cerradas++
-    if (c.estado === 'beca') r.becas++
-    r.filas.push({ id: `e-${c.id}`, tipo: 'empresa', empresa_nombre: c.nombre, estado: c.estado, creado: cuando, puntos: pts })
+    r.becas += nBecas
+    r.filas.push({ id: `e-${c.id}`, tipo: 'empresa', empresa_nombre: c.nombre, estado: c.estado, creado: cuando, puntos: total,
+      detalle: nBecas > 1 ? `${nBecas} becas` : '' })
   }
 
   // Si el centro ha puesto la quincena a 0, no hay bonus de quincena
@@ -1661,9 +1693,16 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
 
   useEffect(() => {
     setDatos(null); setErr('')
-    supabase.rpc('ranking_datos', { p_hasta: hasta }).then(({ data, error }) => {
-      if (error) { setErr('No se ha podido cargar el ranking. ¿Se ha ejecutado migracion_ranking.sql en Supabase?'); setDatos({ hist: [], empresas: [] }) }
-      else setDatos(data || { hist: [], empresas: [] })
+    Promise.all([
+      supabase.rpc('ranking_datos', { p_hasta: hasta }),
+      // Nº de becas por empresa (si aún no se ha ejecutado migracion_varias_becas.sql, cada beca cuenta 1)
+      supabase.rpc('crm_becas_empresas').then((r) => r, () => ({ data: null })),
+    ]).then(([{ data, error }, { data: pracs }]) => {
+      if (error) { setErr('No se ha podido cargar el ranking. ¿Se ha ejecutado migracion_ranking.sql en Supabase?'); setDatos({ hist: [], empresas: [] }); return }
+      const d = data || { hist: [], empresas: [] }
+      const porEmpresa = {}
+      for (const p of (Array.isArray(pracs) ? pracs : [])) (porEmpresa[p.empresa_id] ||= []).push(p)
+      setDatos({ ...d, empresas: (d.empresas || []).map((c) => ({ ...c, practicas: porEmpresa[c.id] || c.practicas || [] })) })
     })
   }, [hasta])
 
