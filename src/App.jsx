@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react'
 import { supabase } from './supabase'
 import {
   Building2, Plus, Search, LogOut, Pencil, Trash2, X, ChevronRight,
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
   History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
-  Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock,
+  Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock, BarChart3, Sparkles,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -2704,6 +2704,513 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
   )
 }
 
+// ---------- Estadísticas de contacto (por centro) ----------
+// Salen del historial. Un «contacto» es una nota o un cambio de estado; un seguimiento con cambio de
+// estado deja dos filas (estado + nota) con la misma hora y cuenta como UN contacto (claveSeg).
+// Cada contacto cuenta para el centro de la persona que lo hizo, aunque la empresa sea del bote.
+// Colores fijos por centro (según su orden en la tabla centros): el mismo centro, el mismo color.
+const COLORES_SERIE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
+const COLOR_BORRADOS = '#94a3b8'
+const TODOS = '__todos'
+const lunesDe = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x }
+const recorta = (s, n = 24) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s }
+const diaLargo = (iso) => iso ? new Date(iso).toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' }) : ''
+const FUENTE = 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif'
+
+// Descarga una gráfica SVG como PNG, con su título, el periodo y la leyenda encima
+// (fondo blanco, el doble de resolución para que se vea nítida)
+function descargarPng(svg, nombre, { titulo = '', sub = '', leyenda = [] } = {}) {
+  if (!svg) return
+  const W0 = svg.viewBox.baseVal.width, H0 = svg.viewBox.baseVal.height
+  const M = 24, CAB = 62 + (leyenda.length > 1 ? 24 : 0)
+  const width = W0 + M * 2, height = H0 + CAB + M
+  let lx = M
+  const ley = leyenda.length > 1 ? leyenda.map((l) => {
+    const t = `<circle cx="${lx + 5}" cy="${CAB - 18}" r="5" fill="${l.color}"/><text x="${lx + 15}" y="${CAB - 14}" font-size="12" fill="#475569">${esc(l.nombre)}</text>`
+    lx += 30 + String(l.nombre).length * 7
+    return t
+  }).join('') : ''
+  const xml = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="${FUENTE}">` +
+    `<rect width="${width}" height="${height}" fill="#ffffff"/>` +
+    `<text x="${M}" y="34" font-size="17" font-weight="700" fill="#0f172a">${esc(titulo)}</text>` +
+    `<text x="${M}" y="54" font-size="12" fill="#64748b">${esc(sub)}</text>${ley}` +
+    `<g transform="translate(${M},${CAB})">${svg.innerHTML}</g></svg>`
+  const E = 2
+  const img = new Image()
+  img.onload = () => {
+    const cv = document.createElement('canvas')
+    cv.width = width * E
+    cv.height = height * E
+    const g = cv.getContext('2d')
+    g.fillStyle = '#ffffff'
+    g.fillRect(0, 0, cv.width, cv.height)
+    g.drawImage(img, 0, 0, cv.width, cv.height)
+    cv.toBlob((b) => {
+      const url = URL.createObjectURL(b)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${nombre}.png`
+      a.click()
+      URL.revokeObjectURL(url)
+    }, 'image/png')
+  }
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml)
+}
+
+// Ancho real del contenedor, para que la gráfica se dibuje a su tamaño y el texto no se agrande ni encoja
+function useAncho(min = 300) {
+  const ref = useRef(null)
+  const [ancho, setAncho] = useState(720)
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(([e]) => setAncho(Math.max(min, Math.round(e.contentRect.width))))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [min])
+  return [ref, ancho]
+}
+
+const BtnMini = ({ children, ...props }) => (
+  <button {...props}
+    className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1 disabled:opacity-50">
+    {children}
+  </button>
+)
+
+function Tarjeta({ titulo, sub, acciones, children }) {
+  return (
+    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] p-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-4">
+        <div className="min-w-0">
+          <h3 className="font-bold text-slate-900">{titulo}</h3>
+          {sub && <p className="text-xs text-slate-500 mt-0.5">{sub}</p>}
+        </div>
+        {acciones && <div className="flex items-center gap-2 shrink-0">{acciones}</div>}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+// Barras horizontales. datos: [{ id, label, valor, tip?, color?, apagado? }]. El valor va escrito al
+// final de cada barra, así que la gráfica se lee sin pasar el ratón; el ratón da el detalle (tip).
+function BarrasSvg({ datos, svgRef, color = COLORES_SERIE[0], vacio = 'No hay datos en este periodo.' }) {
+  const [hover, setHover] = useState(null)
+  const [caja, W] = useAncho()
+  const F = 30, IZQ = Math.round(Math.min(168, W * 0.38)), DER = 44, TOP = 4
+  const H = TOP + datos.length * F + 4
+  const max = Math.max(1, ...datos.map((d) => d.valor))
+  const ancho = W - IZQ - DER
+  const d = hover !== null ? datos[hover] : null
+  const cabe = Math.max(8, Math.floor((IZQ - 14) / 7)) // caracteres que caben en la columna de nombres
+  return (
+    <div ref={caja} className="relative">
+      {!datos.length ? <p className="text-sm text-slate-400">{vacio}</p> : (
+      <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block" fontFamily={FUENTE} role="img"
+        onMouseLeave={() => setHover(null)}>
+        {datos.map((x, i) => {
+          const y = TOP + i * F
+          const w = x.valor ? Math.max(4, (x.valor / max) * ancho) : 0
+          return (
+            <g key={x.id} onMouseEnter={() => setHover(i)}>
+              <rect x={0} y={y} width={W} height={F} rx="6" fill={hover === i ? '#f1f5f9' : '#ffffff'} />
+              <text x={IZQ - 10} y={y + F / 2 + 4.5} textAnchor="end" fontSize="13"
+                fill={x.apagado ? '#94a3b8' : '#334155'} fontStyle={x.apagado ? 'italic' : 'normal'}>{recorta(x.label, cabe)}</text>
+              {w > 0 && <rect x={IZQ} y={y + 7} width={w} height={F - 14} rx="4" fill={x.color || color} />}
+              <text x={IZQ + w + 8} y={y + F / 2 + 4.5} fontSize="13" fontWeight="700" fill={x.valor ? '#0f172a' : '#94a3b8'}>{x.valor}</text>
+            </g>
+          )
+        })}
+      </svg>
+      )}
+      {d?.tip && (
+        <div className="absolute z-10 pointer-events-none rounded-lg bg-[#0d2b45] text-white text-xs px-2.5 py-1.5 shadow-lg max-w-xs"
+          style={{ left: `${(IZQ / W) * 100}%`, top: `${((TOP + (hover + 1) * F) / H) * 100}%` }}>
+          <p className="font-semibold">{d.label}</p>
+          <p className="text-white/80">{d.tip}</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Líneas por semana. series: [{ id, nombre, color, valores: [n por semana] }]
+function LineasSvg({ etiquetas, series, svgRef }) {
+  const [hover, setHover] = useState(null)
+  const [caja, W] = useAncho()
+  const H = 240, IZQ = 34, DER = 14, TOP = 12, ABAJO = 26
+  const n = etiquetas.length
+  const ancho = W - IZQ - DER, alto = H - TOP - ABAJO
+  const max = Math.max(1, ...series.flatMap((s) => s.valores))
+  const paso = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].find((p) => max / p <= 4) || 2000
+  const tope = Math.ceil(max / paso) * paso
+  const x = (i) => IZQ + (n === 1 ? ancho / 2 : (i * ancho) / (n - 1))
+  const y = (v) => TOP + alto - (v / tope) * alto
+  const cada = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(W / 80))))
+  const col = n === 1 ? ancho : ancho / (n - 1)
+  const marcas = n <= 30
+  return (
+    <div ref={caja} className="relative">
+      <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block" fontFamily={FUENTE} role="img"
+        onMouseLeave={() => setHover(null)}>
+        <rect x="0" y="0" width={W} height={H} fill="#ffffff" />
+        {Array.from({ length: tope / paso + 1 }, (_, k) => k * paso).map((v) => (
+          <g key={v}>
+            <line x1={IZQ} x2={W - DER} y1={y(v)} y2={y(v)} stroke={v === 0 ? '#cbd5e1' : '#eef2f6'} strokeWidth="1" />
+            <text x={IZQ - 8} y={y(v) + 4} textAnchor="end" fontSize="11" fill="#64748b">{v}</text>
+          </g>
+        ))}
+        {etiquetas.map((e, i) => i % cada === 0 ? (
+          <text key={i} x={x(i)} y={H - 8} textAnchor={n > 1 && i === 0 ? 'start' : n > 1 && x(i) > W - DER - 30 ? 'end' : 'middle'} fontSize="11" fill="#64748b">{e}</text>
+        ) : null)}
+        {hover !== null && <line x1={x(hover)} x2={x(hover)} y1={TOP} y2={TOP + alto} stroke="#94a3b8" strokeWidth="1" strokeDasharray="3 3" />}
+        {series.map((s) => (
+          <g key={s.id}>
+            <path d={s.valores.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(' ')}
+              fill="none" stroke={s.color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+            {s.valores.map((v, i) => (marcas || hover === i) && (
+              <circle key={i} cx={x(i)} cy={y(v)} r={hover === i ? 5 : 4} fill={s.color} stroke="#ffffff" strokeWidth="2" />
+            ))}
+          </g>
+        ))}
+        {etiquetas.map((_, i) => (
+          <rect key={i} x={x(i) - col / 2} y={TOP} width={col} height={alto} fill="transparent" onMouseEnter={() => setHover(i)} />
+        ))}
+      </svg>
+      {hover !== null && (
+        <div className="absolute z-10 pointer-events-none rounded-lg bg-[#0d2b45] text-white text-xs px-2.5 py-1.5 shadow-lg whitespace-nowrap"
+          style={{ left: `${(x(hover) / W) * 100}%`, top: 0, transform: `translateX(${x(hover) > W * 0.6 ? 'calc(-100% - 10px)' : '10px'})` }}>
+          <p className="font-semibold mb-0.5">Semana del {etiquetas[hover]}</p>
+          {series.map((s) => (
+            <p key={s.id} className="flex items-center gap-1.5">
+              <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
+              {series.length > 1 && <span className="text-white/80">{s.nombre}</span>}
+              <span className="ml-auto pl-3 font-semibold tabular-nums">{s.valores[hover]} contacto{s.valores[hover] !== 1 ? 's' : ''}</span>
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
+  const [desde, setDesde] = useState(INICIO_CURSO())
+  const [hasta, setHasta] = useState(HOY())
+  const [ver, setVer] = useState(isSuper && centros.length > 1 ? TODOS : miCentro)
+  const [hist, setHist] = useState(null)
+  const [err, setErr] = useState('')
+  const refSemanas = useRef(null), refGente = useRef(null), refPersonas = useRef(null), refVeces = useRef(null), refEstados = useRef(null)
+
+  useEffect(() => {
+    let vivo = true
+    setHist(null); setErr('')
+    traerTodo(() => supabase
+      .from('historial')
+      .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, estado_nuevo, creado')
+      .in('accion', ['nota', 'estado'])
+      .gte('creado', new Date(desde + 'T00:00:00').toISOString())
+      .lt('creado', new Date(diaMas(hasta, 1) + 'T00:00:00').toISOString())
+      .order('id'))
+      .then((d) => { if (vivo) setHist(d) })
+      .catch((e) => { if (vivo) { setErr(e.message); setHist([]) } })
+    return () => { vivo = false }
+  }, [desde, hasta])
+
+  // Un admin de centro solo ve el suyo; el admin general puede ver todos o uno concreto
+  const verEf = isSuper ? (ver === TODOS || centros.some((c) => c.id === ver) ? ver : miCentro) : miCentro
+  const todos = verEf === TODOS
+  const idsCentro = centros.length ? centros.map((c) => c.id) : [miCentro]
+  const colorCentro = (id) => id ? COLORES_SERIE[Math.max(0, idsCentro.indexOf(id)) % COLORES_SERIE.length] : COLOR_BORRADOS
+  const porId = new Map(users.map((u) => [u.id, u]))
+  const centroDeUsuario = (id) => { const u = porId.get(id); return u ? (u.centro || 'TLMA') : null } // null = ya no está en el CRM
+  const empresaPorId = new Map(companies.map((c) => [c.id, c]))
+
+  // Contactos únicos (estado + nota del mismo seguimiento = uno)
+  const contactos = (() => {
+    const m = new Map()
+    for (const h of hist || []) {
+      const k = claveSeg(h)
+      const c = m.get(k) || {
+        empresa_id: h.empresa_id, empresa_nombre: h.empresa_nombre, usuario_id: h.usuario_id,
+        usuario_nombre: porId.get(h.usuario_id)?.nombre || h.usuario_nombre || 'Alguien que ya no está',
+        creado: h.creado, centro: centroDeUsuario(h.usuario_id), estado_nuevo: null,
+      }
+      if (h.accion === 'estado' && h.estado_nuevo) c.estado_nuevo = h.estado_nuevo
+      m.set(k, c)
+    }
+    return [...m.values()].sort((a, b) => a.creado.localeCompare(b.creado))
+  })()
+  const enVista = todos ? contactos : contactos.filter((c) => c.centro === verEf)
+  const miembros = todos ? users : users.filter((u) => (u.centro || 'TLMA') === verEf)
+
+  // Cifras de cabecera
+  const activos = new Set(enVista.filter((c) => porId.has(c.usuario_id)).map((c) => c.usuario_id))
+  const empresasTocadas = new Set(enVista.map((c) => c.empresa_id))
+  const becas = new Set(enVista.filter((c) => c.estado_nuevo === 'beca').map((c) => c.empresa_id)).size
+  const media = empresasTocadas.size ? (enVista.length / empresasTocadas.size).toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '0'
+  const pct = (a, b) => b ? Math.round((a / b) * 100) : 0
+
+  // Por persona (con quien no ha contactado, para ver quién falta)
+  const porPersona = miembros.map((u) => {
+    const suyos = enVista.filter((c) => c.usuario_id === u.id)
+    return { u, n: suyos.length, empresas: new Set(suyos.map((c) => c.empresa_id)).size, ultimo: suyos.length ? suyos[suyos.length - 1].creado : null }
+  }).sort((a, b) => b.n - a.n || a.u.nombre.localeCompare(b.u.nombre, 'es'))
+  const deBorrados = enVista.filter((c) => !porId.has(c.usuario_id))
+
+  // Por centro (vista de todos los centros)
+  const porCentro = [...idsCentro, null].map((id) => {
+    const suyos = contactos.filter((c) => c.centro === id)
+    const gente = id ? users.filter((u) => (u.centro || 'TLMA') === id) : []
+    const act = new Set(suyos.map((c) => c.usuario_id))
+    return {
+      id, nombre: id ? (centros.find((c) => c.id === id)?.nombre || id) : 'Gente que ya no está en el CRM',
+      miembros: gente.length, activos: id ? act.size : 0, contactos: suyos.length,
+      empresas: new Set(suyos.map((c) => c.empresa_id)).size,
+      becas: new Set(suyos.filter((c) => c.estado_nuevo === 'beca').map((c) => c.empresa_id)).size,
+    }
+  }).filter((r) => r.id || r.contactos)
+
+  // Contactos por semana
+  const semanas = []
+  for (let d = lunesDe(new Date(desde + 'T00:00:00')); isoDia(d) <= hasta; d.setDate(d.getDate() + 7)) semanas.push(isoDia(d))
+  const idxSemana = new Map(semanas.map((s, i) => [s, i]))
+  const serie = (filtro) => {
+    const v = semanas.map(() => 0)
+    for (const c of contactos) if (filtro(c)) { const i = idxSemana.get(isoDia(lunesDe(c.creado))); if (i !== undefined) v[i]++ }
+    return v
+  }
+  const series = todos
+    ? porCentro.filter((r) => r.contactos > 0 || r.id).map((r) => ({ id: r.id || 'borrados', nombre: r.id || 'Ya no están', color: colorCentro(r.id), valores: serie((c) => c.centro === r.id) }))
+        .filter((s) => s.id !== 'borrados' || s.valores.some(Boolean))
+    : [{ id: verEf, nombre: verEf, color: colorCentro(verEf), valores: serie((c) => c.centro === verEf) }]
+  const etiquetasSemana = semanas.map((s) => new Date(s + 'T00:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'short' }))
+
+  // Veces que se ha contactado cada empresa
+  const porEmpresa = (() => {
+    const m = new Map()
+    for (const c of enVista) {
+      const e = m.get(c.empresa_id) || { id: c.empresa_id, nombre: empresaPorId.get(c.empresa_id)?.nombre || c.empresa_nombre || '(empresa borrada)', n: 0, gente: new Set(), ultimo: null }
+      e.n++; e.gente.add(c.usuario_nombre); e.ultimo = c.creado
+      m.set(c.empresa_id, e)
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n || a.nombre.localeCompare(b.nombre, 'es'))
+  })()
+  const tramos = [[1, '1 vez'], [2, '2 veces'], [3, '3 veces'], [4, '4 veces'], [5, '5 veces o más']]
+  const veces = tramos.map(([t, label]) => {
+    const n = porEmpresa.filter((e) => (t === 5 ? e.n >= 5 : e.n === t)).length
+    return { id: String(t), label, valor: n, tip: `${n} empresa${n !== 1 ? 's' : ''} (${pct(n, porEmpresa.length)} % de las contactadas)` }
+  })
+
+  // Estado actual de las empresas (no depende de las fechas)
+  const empresasVista = todos ? companies.filter((c) => c.centro) : companies.filter((c) => c.centro === verEf)
+  const estados = ESTADOS
+    .map((e) => ({ id: e.id, label: e.label, valor: empresasVista.filter((c) => c.estado === e.id).length, oculto: e.oculto }))
+    .filter((e) => !e.oculto || e.valor)
+    .map((e) => ({ ...e, tip: `${pct(e.valor, empresasVista.length)} % de las ${empresasVista.length} empresas` }))
+
+  const sufijo = `${todos ? 'todos' : verEf}-${desde}_${hasta}`
+  const exportarContactos = () => descargarCsv(`contactos-${sufijo}`,
+    ['Fecha', 'Centro', 'Persona', 'Empresa', 'Tipo', 'Estado nuevo'],
+    enVista.map((c) => [new Date(c.creado).toLocaleString('es-ES'), c.centro || '—', c.usuario_nombre,
+      empresaPorId.get(c.empresa_id)?.nombre || c.empresa_nombre || '', c.estado_nuevo ? 'Cambio de estado' : 'Nota',
+      c.estado_nuevo ? estadoDe(c.estado_nuevo).label : '']))
+  const exportarPersonas = () => descargarCsv(`contactos-por-persona-${sufijo}`,
+    ['Centro', 'Persona', 'Contactos', 'Empresas distintas', 'Último contacto'],
+    porPersona.map((p) => [p.u.centro || 'TLMA', p.u.nombre, p.n, p.empresas, p.ultimo ? diaLargo(p.ultimo) : '']))
+  const exportarEmpresas = () => descargarCsv(`contactos-por-empresa-${sufijo}`,
+    ['Empresa', 'Centro de la empresa', 'Veces contactada', 'Personas que la han contactado', 'Último contacto', 'Estado actual'],
+    porEmpresa.map((e) => { const c = empresaPorId.get(e.id); return [e.nombre, c ? (c.centro || 'Bote común') : 'Borrada', e.n, [...e.gente].join(', '), diaLargo(e.ultimo), c ? estadoDe(c.estado).label : ''] }))
+
+  const atajo = (label, d) => (
+    <button key={label} onClick={() => { setDesde(d); setHasta(HOY()) }}
+      className={`px-2.5 py-1 rounded-lg border text-xs ${desde === d && hasta === HOY() ? 'border-white bg-white text-[#0e2d4d] font-semibold' : 'border-white/25 text-white/80 hover:bg-white/10'}`}>
+      {label}
+    </button>
+  )
+  const Cifra = ({ valor, label, sub }) => (
+    <div className="bg-white rounded-2xl border border-slate-200/80 px-4 py-3">
+      <p className="text-2xl font-bold text-slate-900 tabular-nums">{valor}</p>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
+      {sub && <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>}
+    </div>
+  )
+  const subPng = `CRM IAESTE · ${todos ? 'Todos los centros' : (centros.find((c) => c.id === verEf)?.nombre || verEf)} · del ${diaLargo(desde + 'T00:00:00')} al ${diaLargo(hasta + 'T00:00:00')}`
+  const png = (ref, nombre, titulo, leyenda) => (
+    <BtnMini onClick={() => descargarPng(ref.current, `${nombre}-${sufijo}`, { titulo, sub: subPng, leyenda })}><Download className="w-3.5 h-3.5" />PNG</BtnMini>
+  )
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-[#0d2b45] text-white rounded-2xl p-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h2 className="text-lg font-bold flex items-center gap-2"><BarChart3 className="w-5 h-5 text-sky-300" />Estadísticas de contacto</h2>
+            <p className="text-sm text-white/70 mt-0.5">Quién contacta, cuánto y con qué empresas, {todos ? 'por centro' : `en ${centros.find((c) => c.id === verEf)?.nombre || verEf}`}.</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {[['Contactos', exportarContactos], ['Por persona', exportarPersonas], ['Por empresa', exportarEmpresas]].map(([l, fn]) => (
+              <button key={l} onClick={fn} disabled={!hist}
+                className="px-2.5 py-1 rounded-lg border border-white/25 text-xs font-medium text-white/90 hover:bg-white/10 inline-flex items-center gap-1 disabled:opacity-50">
+                <FileSpreadsheet className="w-3.5 h-3.5" />CSV · {l}
+              </button>
+            ))}
+          </div>
+        </div>
+        {isSuper && centros.length > 1 && (
+          <div className="flex gap-1.5 overflow-x-auto mt-4 pb-0.5">
+            {[{ id: TODOS, label: 'Todos los centros' }, ...centros.map((c) => ({ id: c.id, label: c.id, title: c.nombre }))].map((t) => (
+              <button key={t.id} onClick={() => setVer(t.id)} title={t.title}
+                className={`shrink-0 px-3 py-1 rounded-full text-sm font-semibold inline-flex items-center gap-1.5 ${verEf === t.id ? 'bg-white text-[#0e2d4d]' : 'text-white/80 hover:bg-white/10'}`}>
+                {t.id !== TODOS && <span className="w-2 h-2 rounded-full" style={{ background: colorCentro(t.id) }} />}
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-2 mt-4">
+          <input type="date" value={desde} max={hasta} onChange={(e) => e.target.value && setDesde(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg border border-white/20 text-sm bg-white text-slate-900" />
+          <span className="text-white/60 text-sm">a</span>
+          <input type="date" value={hasta} min={desde} onChange={(e) => e.target.value && setHasta(e.target.value)}
+            className="px-2.5 py-1.5 rounded-lg border border-white/20 text-sm bg-white text-slate-900" />
+          <span className="flex gap-1.5">{atajo('Curso', INICIO_CURSO())}{atajo('30 días', sumarDias(-30))}{atajo('7 días', sumarDias(-7))}</span>
+        </div>
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+      {hist === null ? (
+        <p className="text-sm text-slate-400 px-1">Cargando…</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Cifra valor={`${activos.size}/${miembros.length}`} label="Personas que han contactado" sub={`${pct(activos.size, miembros.length)} % del ${todos ? 'total' : 'centro'}`} />
+            <Cifra valor={enVista.length} label="Contactos" sub="notas y cambios de estado" />
+            <Cifra valor={empresasTocadas.size} label="Empresas contactadas" sub="distintas" />
+            <Cifra valor={media} label="Contactos por empresa" sub="de media" />
+            <Cifra valor={becas} label="Becas conseguidas" sub="en el periodo" />
+          </div>
+
+          <Tarjeta titulo="Contactos por semana" sub={todos ? 'Cada línea es un centro. Pasa el ratón para ver los números de cada semana.' : 'Pasa el ratón para ver los números de cada semana.'}
+            acciones={png(refSemanas, 'contactos-por-semana', 'Contactos por semana', series)}>
+            {series.length > 1 && (
+              <div className="flex flex-wrap gap-x-4 gap-y-1 mb-3 text-xs text-slate-600">
+                {series.map((s) => (
+                  <span key={s.id} className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ background: s.color }} />{s.nombre}
+                    <span className="text-slate-400 tabular-nums">· {s.valores.reduce((a, b) => a + b, 0)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            <LineasSvg etiquetas={etiquetasSemana} series={series} svgRef={refSemanas} />
+          </Tarjeta>
+
+          {todos ? (
+            <Tarjeta titulo="Por centro" sub="Personas que han contactado al menos una vez en el periodo, sobre el total de miembros de cada centro."
+              acciones={png(refGente, 'gente-que-contacta-por-centro', 'Personas que han contactado, por centro')}>
+              <BarrasSvg svgRef={refGente}
+                datos={porCentro.filter((r) => r.id).map((r) => ({ id: r.id, label: r.id, valor: r.activos, color: colorCentro(r.id),
+                  tip: `${r.nombre}: ${r.activos} de ${r.miembros} miembros (${pct(r.activos, r.miembros)} %) · ${r.contactos} contactos` }))} />
+              <div className="overflow-x-auto mt-4">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-400 uppercase tracking-wide text-right">
+                      <th className="text-left font-medium pb-2">Centro</th>
+                      <th className="font-medium pb-2">Miembros</th>
+                      <th className="font-medium pb-2" title="Han hecho al menos un contacto en el periodo">Activos</th>
+                      <th className="font-medium pb-2">Contactos</th>
+                      <th className="font-medium pb-2">Empresas</th>
+                      <th className="font-medium pb-2" title="Contactos por persona activa">Por persona</th>
+                      <th className="font-medium pb-2">Becas</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porCentro.map((r) => (
+                      <tr key={r.id || 'na'} className="border-t border-slate-100 text-right tabular-nums">
+                        <td className={`text-left py-2 ${r.id ? 'text-slate-800 font-medium' : 'text-slate-400 italic'}`}>
+                          <span className="inline-block w-2 h-2 rounded-full mr-2" style={{ background: colorCentro(r.id) }} />{r.id || r.nombre}
+                        </td>
+                        <td className="text-slate-500">{r.id ? r.miembros : '—'}</td>
+                        <td className="text-slate-700">{r.id ? <>{r.activos} <span className="text-slate-400 text-xs">({pct(r.activos, r.miembros)} %)</span></> : '—'}</td>
+                        <td className="text-slate-900 font-semibold">{r.contactos}</td>
+                        <td className="text-slate-500">{r.empresas}</td>
+                        <td className="text-slate-500">{r.activos ? (r.contactos / r.activos).toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '—'}</td>
+                        <td className={r.becas ? 'text-emerald-700 font-semibold' : 'text-slate-300'}>{r.becas}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Tarjeta>
+          ) : (
+            <Tarjeta titulo="Contactos por persona"
+              sub={`${activos.size} de ${miembros.length} personas han contactado en el periodo. En gris, quien aún no ha hecho ninguno.`}
+              acciones={png(refPersonas, 'contactos-por-persona', 'Contactos por persona')}>
+              <BarrasSvg svgRef={refPersonas} color={colorCentro(verEf)} vacio="No hay nadie en este centro todavía."
+                datos={porPersona.map((p) => ({ id: p.u.id, label: p.u.nombre, valor: p.n, apagado: !p.n,
+                  tip: p.n ? `${p.empresas} empresa${p.empresas !== 1 ? 's' : ''} distinta${p.empresas !== 1 ? 's' : ''} · último contacto el ${diaLargo(p.ultimo)}` : 'Ningún contacto en este periodo' }))} />
+              {deBorrados.length > 0 && (
+                <p className="text-xs text-slate-400 mt-3">Además hay {deBorrados.length} contactos de gente que ya no está en el CRM; cuentan en las cifras de empresas pero no en esta lista.</p>
+              )}
+            </Tarjeta>
+          )}
+
+          <div className="grid md:grid-cols-2 gap-4">
+            <Tarjeta titulo="Veces que se ha contactado cada empresa" sub={`${porEmpresa.length} empresas contactadas en el periodo.`}
+              acciones={png(refVeces, 'veces-por-empresa', 'Veces que se ha contactado cada empresa')}>
+              <BarrasSvg svgRef={refVeces} datos={porEmpresa.length ? veces : []} color={todos ? COLORES_SERIE[0] : colorCentro(verEf)} />
+            </Tarjeta>
+            <Tarjeta titulo="Estado actual de las empresas" sub={`${empresasVista.length} empresas ${todos ? 'asignadas a algún centro' : 'del centro'}. Es la foto de hoy: no depende de las fechas.`}
+              acciones={png(refEstados, 'estado-empresas', 'Estado actual de las empresas')}>
+              <BarrasSvg svgRef={refEstados} datos={empresasVista.length ? estados : []} color={todos ? COLORES_SERIE[0] : colorCentro(verEf)} vacio="Este centro no tiene empresas todavía." />
+            </Tarjeta>
+          </div>
+
+          <Tarjeta titulo="Empresas más contactadas" sub="Las diez con más contactos en el periodo.">
+            {porEmpresa.length === 0 ? <p className="text-sm text-slate-400">No hay contactos en este periodo.</p> : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-slate-400 uppercase tracking-wide text-left">
+                      <th className="font-medium pb-2">Empresa</th>
+                      <th className="font-medium pb-2 text-right pr-4">Veces</th>
+                      <th className="font-medium pb-2">Quién</th>
+                      <th className="font-medium pb-2">Último</th>
+                      <th className="font-medium pb-2">Estado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {porEmpresa.slice(0, 10).map((e) => {
+                      const c = empresaPorId.get(e.id)
+                      return (
+                        <tr key={e.id} className="border-t border-slate-100">
+                          <td className="py-2 pr-3 text-slate-800 font-medium">{e.nombre}</td>
+                          <td className="text-right pr-4 font-bold tabular-nums text-slate-900">{e.n}</td>
+                          <td className="pr-3 text-slate-500 text-xs">{[...e.gente].join(', ')}</td>
+                          <td className="pr-3 text-slate-500 text-xs whitespace-nowrap">{diaLargo(e.ultimo)}</td>
+                          <td>{c ? <Badge estadoId={c.estado} /> : <span className="text-xs text-slate-400 italic">borrada</span>}</td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Tarjeta>
+
+          <p className="text-xs text-slate-400 leading-relaxed px-1">
+            Un contacto es una nota o un cambio de estado en una empresa; si se cambia el estado y se escribe la nota a la vez, cuenta como uno.
+            Cada contacto cuenta para el centro de la persona que lo hizo, aunque la empresa venga del bote común. Los cambios de datos
+            (teléfono, dirección…), las altas y las asignaciones no cuentan. Los CSV llevan exactamente lo que se ve con el centro y las fechas elegidas.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 // ---------- Descargar un CSV (se abre en Excel) ----------
 function descargarCsv(nombre, cab, filas) {
   const csv = [cab, ...filas]
@@ -2728,26 +3235,138 @@ const ESTADOS_MEJORA = [
 ]
 const estadoMejora = (id) => ESTADOS_MEJORA.find((e) => e.id === id) || ESTADOS_MEJORA[0]
 
-// Botón de la cabecera; a los admins generales les marca cuántas ideas nuevas hay sin revisar
+// ---------- Novedades: lo último que se ha cambiado en el CRM ----------
+// Tabla novedades (migracion_novedades.sql). Las escriben los admins generales; además, al marcar una
+// idea del buzón como «Hecha» se publica sola como novedad (con quién la propuso).
+// Cada navegador recuerda la última novedad que ha visto, para avisar en la bombilla cuando hay otra.
+const CLAVE_VISTA = 'crm-novedades-vista'
+const leerVista = () => { try { return Number(localStorage.getItem(CLAVE_VISTA)) || 0 } catch { return 0 } }
+const guardarVista = (id) => { try { localStorage.setItem(CLAVE_VISTA, String(id)) } catch { /* sin almacenamiento: no pasa nada */ } }
+const fechaNovedad = (f) => f ? new Date(f + 'T00:00:00').toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' }) : ''
+const faltaTabla = (m) => /relation|schema cache|does not exist/i.test(m || '')
+
+// Botón de la cabecera: a los admins generales les marca las ideas nuevas sin revisar; a todo el
+// mundo, un punto verde si hay novedades que aún no ha visto.
 function BotonMejoras({ me, onAbrir, version }) {
   const [nuevas, setNuevas] = useState(0)
+  const [hayNovedad, setHayNovedad] = useState(false)
   useEffect(() => {
-    if (me.rol !== 'superadmin') return
-    supabase.from('mejoras').select('id', { count: 'exact', head: true }).eq('estado', 'nueva')
-      .then(({ count }) => setNuevas(count || 0))
+    if (me.rol === 'superadmin') {
+      supabase.from('mejoras').select('id', { count: 'exact', head: true }).eq('estado', 'nueva')
+        .then(({ count }) => setNuevas(count || 0))
+    }
+    supabase.from('novedades').select('id').order('id', { ascending: false }).limit(1)
+      .then(({ data }) => setHayNovedad(!!data?.[0] && data[0].id > leerVista()))
   }, [me.rol, version])
   return (
-    <button onClick={onAbrir} title="Ideas de mejora para el CRM"
+    <button onClick={() => onAbrir(hayNovedad ? 'novedades' : 'ideas')} title={hayNovedad ? 'Hay novedades en el CRM' : 'Novedades e ideas de mejora'}
       className="relative p-2 rounded-full hover:bg-white/[0.08] text-white/70 hover:text-white">
       <Lightbulb className="w-4 h-4" />
-      {nuevas > 0 && (
+      {nuevas > 0 ? (
         <span className="absolute -top-0.5 -right-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-400 text-[#0d2b45] text-[10px] font-bold flex items-center justify-center">{nuevas}</span>
+      ) : hayNovedad && (
+        <span className="absolute top-1 right-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-2 ring-[#0d2b45]" />
       )}
     </button>
   )
 }
 
-function Mejoras({ me, onClose, onChanged }) {
+function Novedades({ me, recarga, onCambio }) {
+  const [lista, setLista] = useState(null)
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [editando, setEditando] = useState(null) // null | 'nueva' | id
+  const [f, setF] = useState({ titulo: '', descripcion: '', fecha: HOY() })
+  const gestiona = me.rol === 'superadmin'
+
+  useEffect(() => {
+    let vivo = true
+    supabase.from('novedades').select('*, mejora:mejoras(usuario_nombre, centro)')
+      .order('fecha', { ascending: false }).order('id', { ascending: false })
+      .then(({ data, error }) => {
+        if (!vivo) return
+        if (error) setErr(faltaTabla(error.message) ? 'Falta ejecutar migracion_novedades.sql en Supabase.' : error.message)
+        setLista(data || [])
+        if (data?.length) guardarVista(Math.max(...data.map((n) => n.id)))
+      })
+    return () => { vivo = false }
+  }, [recarga])
+
+  const hacer = async (fn) => {
+    setBusy(true); setErr('')
+    const { error } = await fn()
+    setBusy(false)
+    if (error) { setErr(error.message); return }
+    setEditando(null); onCambio()
+  }
+  const abrir = (n) => {
+    setEditando(n ? n.id : 'nueva')
+    setF(n ? { titulo: n.titulo, descripcion: n.descripcion || '', fecha: n.fecha } : { titulo: '', descripcion: '', fecha: HOY() })
+  }
+  const guardar = () => {
+    const datos = { titulo: f.titulo.trim().slice(0, 120), descripcion: f.descripcion.trim().slice(0, 1000) || null, fecha: f.fecha || HOY() }
+    if (!datos.titulo) { setErr('Ponle un título.'); return }
+    hacer(() => editando === 'nueva'
+      ? supabase.from('novedades').insert(datos)
+      : supabase.from('novedades').update(datos).eq('id', editando))
+  }
+
+  const formulario = (
+    <div className="rounded-xl border border-blue-200 bg-blue-50/50 p-3 space-y-2">
+      <input value={f.titulo} onChange={(e) => setF({ ...f, titulo: e.target.value })} maxLength={120} placeholder="Qué ha cambiado (ej.: Nueva pestaña de Estadísticas)"
+        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white" />
+      <textarea value={f.descripcion} onChange={(e) => setF({ ...f, descripcion: e.target.value })} rows={2} maxLength={1000} placeholder="Explicación corta para el equipo (opcional)"
+        className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white" />
+      <div className="flex items-center gap-2">
+        <input type="date" value={f.fecha} onChange={(e) => setF({ ...f, fecha: e.target.value })} className="px-2.5 py-1.5 rounded-lg border border-slate-300 text-sm bg-white" />
+        <span className="flex-1" />
+        <button onClick={() => setEditando(null)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+        <Btn onClick={guardar} disabled={busy}><Save className="w-4 h-4" />Publicar</Btn>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="flex-1 overflow-y-auto p-5 space-y-3">
+      <p className="text-xs text-slate-500">Lo último que hemos cambiado en el CRM. Muchas cosas salen de vuestras ideas: gracias.</p>
+      {err && <p className="text-xs text-rose-600">{err}</p>}
+      {gestiona && (editando === 'nueva' ? formulario : (
+        <button onClick={() => abrir(null)} className="w-full rounded-xl border border-dashed border-slate-300 py-2 text-sm text-slate-500 hover:bg-slate-50 inline-flex items-center justify-center gap-1.5">
+          <Plus className="w-4 h-4" />Añadir novedad
+        </button>
+      ))}
+      {lista === null ? <p className="text-sm text-slate-400">Cargando…</p>
+        : lista.length === 0 ? <p className="text-sm text-slate-400">Aún no hay novedades publicadas.</p>
+        : (
+          <ol className="relative border-l border-slate-200 ml-1.5 space-y-4">
+            {lista.map((n) => editando === n.id ? <li key={n.id} className="pl-4">{formulario}</li> : (
+              <li key={n.id} className="pl-4 relative">
+                <span className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-emerald-500 ring-4 ring-white" />
+                <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wide">{fechaNovedad(n.fecha)}</p>
+                <p className="text-sm font-semibold text-slate-900">{n.titulo}</p>
+                {n.descripcion && <p className="text-sm text-slate-600 whitespace-pre-wrap mt-0.5">{n.descripcion}</p>}
+                {n.mejora && (
+                  <p className="text-xs text-amber-700 mt-1 inline-flex items-center gap-1">
+                    <Lightbulb className="w-3 h-3" />Idea de {n.mejora.usuario_nombre || 'alguien del equipo'}{n.mejora.centro ? ` · ${n.mejora.centro}` : ''}
+                  </p>
+                )}
+                {gestiona && (
+                  <p className="mt-1 text-xs text-slate-400 space-x-2">
+                    <button onClick={() => abrir(n)} className="underline hover:text-slate-600">editar</button>
+                    <button onClick={() => confirm('¿Quitar esta novedad?') && hacer(() => supabase.from('novedades').delete().eq('id', n.id))}
+                      className="underline hover:text-rose-600">quitar</button>
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
+    </div>
+  )
+}
+
+function Mejoras({ me, inicial = 'ideas', onClose, onChanged }) {
+  const [seccion, setSeccion] = useState(inicial === 'novedades' ? 'novedades' : 'ideas')
   const [lista, setLista] = useState(null)
   const [texto, setTexto] = useState('')
   const [ver, setVer] = useState('abiertas') // 'abiertas' | 'cerradas'
@@ -2762,7 +3381,7 @@ function Mejoras({ me, onClose, onChanged }) {
     let vivo = true
     supabase.from('mejoras').select('*').order('creado', { ascending: false }).then(({ data, error }) => {
       if (!vivo) return
-      if (error) setErr(/relation|schema cache|does not exist/i.test(error.message) ? 'Falta ejecutar migracion_intercambios_mejoras.sql en Supabase.' : error.message)
+      if (error) setErr(faltaTabla(error.message) ? 'Falta ejecutar migracion_intercambios_mejoras.sql en Supabase.' : error.message)
       setLista(data || [])
     })
     return () => { vivo = false }
@@ -2782,6 +3401,19 @@ function Mejoras({ me, onClose, onChanged }) {
     if (t.length < 3) { setErr('Cuéntanos un poco más la idea.'); return }
     if (await hacer(() => supabase.from('mejoras').insert({ usuario_id: me.id, texto: t.slice(0, 1000) }), '¡Gracias! Idea enviada ✓')) setTexto('')
   }
+  // Al marcar una idea como «Hecha» se publica sola en Novedades (una vez; luego se puede editar)
+  const cambiarEstado = (m, estado) => hacer(async () => {
+    const r = await supabase.from('mejoras').update({ estado }).eq('id', m.id)
+    if (r.error || estado !== 'hecha') return r
+    const { data: ya, error: e1 } = await supabase.from('novedades').select('id').eq('mejora_id', m.id).limit(1)
+    if (e1 || ya?.length) return r
+    const primera = m.texto.split('\n')[0].trim()
+    return supabase.from('novedades').insert({
+      titulo: primera.length > 120 ? primera.slice(0, 119) + '…' : primera,
+      descripcion: m.respuesta || (primera.length < m.texto.trim().length ? m.texto.trim().slice(0, 1000) : null),
+      mejora_id: m.id,
+    })
+  }, estado === 'hecha' ? 'Marcada como hecha y publicada en Novedades ✓' : '')
 
   const abiertas = (lista || []).filter((m) => m.estado === 'nueva' || m.estado === 'en_marcha')
   const cerradas = (lista || []).filter((m) => m.estado === 'hecha' || m.estado === 'descartada')
@@ -2789,79 +3421,91 @@ function Mejoras({ me, onClose, onChanged }) {
 
   return (
     <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="w-full max-w-lg max-h-[90vh] flex flex-col bg-white rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="p-5 pb-3 space-y-3 border-b border-slate-100">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="font-bold text-slate-900 flex items-center gap-2"><Lightbulb className="w-4 h-4 text-amber-500" />Ideas de mejora</h2>
-              <p className="text-xs text-slate-500 mt-0.5">¿Echas algo en falta en el CRM o hay algo que te estorba? Apúntalo aquí y lo vamos implementando.</p>
+      <div className="w-full max-w-lg h-[85vh] flex flex-col bg-white rounded-2xl shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 pt-4 pb-3 border-b border-slate-100 flex items-center gap-2">
+          <div className="flex p-0.5 rounded-full bg-slate-100 text-sm">
+            {[['novedades', 'Novedades', Sparkles], ['ideas', 'Ideas de mejora', Lightbulb]].map(([id, label, Icono]) => (
+              <button key={id} onClick={() => setSeccion(id)}
+                className={`px-3 py-1.5 rounded-full font-semibold inline-flex items-center gap-1.5 ${seccion === id ? 'bg-[#0e2d4d] text-white' : 'text-slate-600 hover:text-slate-900'}`}>
+                <Icono className="w-3.5 h-3.5" />{label}
+              </button>
+            ))}
+          </div>
+          <span className="flex-1" />
+          <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+        </div>
+
+        {seccion === 'novedades' ? (
+          <Novedades me={me} recarga={recarga} onCambio={() => { setRecarga((r) => r + 1); onChanged?.() }} />
+        ) : (
+          <>
+            <div className="p-5 pb-3 space-y-3 border-b border-slate-100">
+              <p className="text-xs text-slate-500">¿Echas algo en falta en el CRM o hay algo que te estorba? Apúntalo aquí y lo vamos implementando. Lo que se haga saldrá en Novedades.</p>
+              <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} maxLength={1000}
+                placeholder="Ej.: que en Seguimiento activo salgan primero las empresas que hace más tiempo que no llamamos"
+                className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30 focus:border-[#0e2d4d]" />
+              <div className="flex items-center gap-2">
+                {err && <p className="text-xs text-rose-600 flex-1">{err}</p>}
+                {ok && !err && <p className="text-xs text-emerald-700 flex-1">{ok}</p>}
+                <span className="flex-1" />
+                <Btn onClick={enviar} disabled={busy || !texto.trim()}><Send className="w-4 h-4" />Enviar idea</Btn>
+              </div>
             </div>
-            <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
-          </div>
-          <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={3} maxLength={1000}
-            placeholder="Ej.: que en Seguimiento activo salgan primero las empresas que hace más tiempo que no llamamos"
-            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30 focus:border-[#0e2d4d]" />
-          <div className="flex items-center gap-2">
-            {err && <p className="text-xs text-rose-600 flex-1">{err}</p>}
-            {ok && !err && <p className="text-xs text-emerald-700 flex-1">{ok}</p>}
-            <span className="flex-1" />
-            <Btn onClick={enviar} disabled={busy || !texto.trim()}><Send className="w-4 h-4" />Enviar idea</Btn>
-          </div>
-        </div>
 
-        <div className="px-5 pt-3 flex gap-1.5">
-          {[['abiertas', `Pendientes · ${abiertas.length}`], ['cerradas', `Hechas o descartadas · ${cerradas.length}`]].map(([id, label]) => (
-            <button key={id} onClick={() => setVer(id)}
-              className={`px-3 py-1 rounded-full text-xs font-medium border ${ver === id ? 'bg-[#0e2d4d] text-white border-[#0e2d4d]' : 'bg-white text-slate-600 border-slate-200'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+            <div className="px-5 pt-3 flex gap-1.5">
+              {[['abiertas', `Pendientes · ${abiertas.length}`], ['cerradas', `Hechas o descartadas · ${cerradas.length}`]].map(([id, label]) => (
+                <button key={id} onClick={() => setVer(id)}
+                  className={`px-3 py-1 rounded-full text-xs font-medium border ${ver === id ? 'bg-[#0e2d4d] text-white border-[#0e2d4d]' : 'bg-white text-slate-600 border-slate-200'}`}>
+                  {label}
+                </button>
+              ))}
+            </div>
 
-        <ul className="flex-1 overflow-y-auto p-5 pt-3 space-y-2">
-          {lista === null ? <li className="text-sm text-slate-400">Cargando…</li>
-            : mostradas.length === 0 ? <li className="text-sm text-slate-400">{ver === 'abiertas' ? 'No hay ideas pendientes. ¡Lanza la primera!' : 'Todavía no hay ninguna cerrada.'}</li>
-            : mostradas.map((m) => {
-              const e = estadoMejora(m.estado)
-              const mia = m.usuario_id === me.id
-              return (
-                <li key={m.id} className="rounded-xl border border-slate-200 p-3 text-sm">
-                  <div className="flex items-start gap-2">
-                    <p className="flex-1 text-slate-800 whitespace-pre-wrap break-words">{m.texto}</p>
-                    <span className={`shrink-0 px-1.5 py-0.5 rounded border text-[11px] font-medium ${e.color}`}>{e.label}</span>
-                  </div>
-                  <p className="mt-1 text-xs text-slate-400">
-                    {mia ? 'Tú' : (m.usuario_nombre || 'Alguien')}{m.centro ? ` · ${m.centro}` : ''} · {fecha(m.creado)}
-                    {(gestiona || (mia && m.estado === 'nueva')) && (
-                      <button onClick={() => confirm('¿Borrar esta idea?') && hacer(() => supabase.from('mejoras').delete().eq('id', m.id))}
-                        disabled={busy} className="ml-2 underline hover:text-rose-600">borrar</button>
-                    )}
-                  </p>
-                  {m.respuesta && <p className="mt-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600"><strong>Respuesta:</strong> {m.respuesta}</p>}
-                  {gestiona && (
-                    <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      {ESTADOS_MEJORA.filter((x) => x.id !== m.estado).map((x) => (
-                        <button key={x.id} disabled={busy}
-                          onClick={() => hacer(() => supabase.from('mejoras').update({ estado: x.id }).eq('id', m.id))}
-                          className="px-2 py-0.5 rounded-full border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">
-                          → {x.label}
-                        </button>
-                      ))}
-                      <input value={respuestas[m.id] ?? m.respuesta ?? ''} maxLength={500}
-                        onChange={(ev) => setRespuestas({ ...respuestas, [m.id]: ev.target.value })}
-                        placeholder="Responder…"
-                        className="flex-1 min-w-[8rem] px-2 py-1 rounded-lg border border-slate-200 text-xs" />
-                      {respuestas[m.id] !== undefined && respuestas[m.id] !== (m.respuesta || '') && (
-                        <button disabled={busy}
-                          onClick={() => hacer(() => supabase.from('mejoras').update({ respuesta: respuestas[m.id].trim() || null }).eq('id', m.id), 'Respuesta guardada ✓')}
-                          className="px-2 py-1 rounded-lg bg-[#0e2d4d] text-white text-[11px] font-semibold">Guardar</button>
+            <ul className="flex-1 overflow-y-auto p-5 pt-3 space-y-2">
+              {lista === null ? <li className="text-sm text-slate-400">Cargando…</li>
+                : mostradas.length === 0 ? <li className="text-sm text-slate-400">{ver === 'abiertas' ? 'No hay ideas pendientes. ¡Lanza la primera!' : 'Todavía no hay ninguna cerrada.'}</li>
+                : mostradas.map((m) => {
+                  const e = estadoMejora(m.estado)
+                  const mia = m.usuario_id === me.id
+                  return (
+                    <li key={m.id} className="rounded-xl border border-slate-200 p-3 text-sm">
+                      <div className="flex items-start gap-2">
+                        <p className="flex-1 text-slate-800 whitespace-pre-wrap break-words">{m.texto}</p>
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded border text-[11px] font-medium ${e.color}`}>{e.label}</span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-400">
+                        {mia ? 'Tú' : (m.usuario_nombre || 'Alguien')}{m.centro ? ` · ${m.centro}` : ''} · {fecha(m.creado)}
+                        {(gestiona || (mia && m.estado === 'nueva')) && (
+                          <button onClick={() => confirm('¿Borrar esta idea?') && hacer(() => supabase.from('mejoras').delete().eq('id', m.id))}
+                            disabled={busy} className="ml-2 underline hover:text-rose-600">borrar</button>
+                        )}
+                      </p>
+                      {m.respuesta && <p className="mt-2 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600"><strong>Respuesta:</strong> {m.respuesta}</p>}
+                      {gestiona && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                          {ESTADOS_MEJORA.filter((x) => x.id !== m.estado).map((x) => (
+                            <button key={x.id} disabled={busy} onClick={() => cambiarEstado(m, x.id)}
+                              className="px-2 py-0.5 rounded-full border border-slate-200 text-[11px] text-slate-600 hover:bg-slate-50">
+                              → {x.label}
+                            </button>
+                          ))}
+                          <input value={respuestas[m.id] ?? m.respuesta ?? ''} maxLength={500}
+                            onChange={(ev) => setRespuestas({ ...respuestas, [m.id]: ev.target.value })}
+                            placeholder="Responder…"
+                            className="flex-1 min-w-[8rem] px-2 py-1 rounded-lg border border-slate-200 text-xs" />
+                          {respuestas[m.id] !== undefined && respuestas[m.id] !== (m.respuesta || '') && (
+                            <button disabled={busy}
+                              onClick={() => hacer(() => supabase.from('mejoras').update({ respuesta: respuestas[m.id].trim() || null }).eq('id', m.id), 'Respuesta guardada ✓')}
+                              className="px-2 py-1 rounded-lg bg-[#0e2d4d] text-white text-[11px] font-semibold">Guardar</button>
+                          )}
+                        </div>
                       )}
-                    </div>
-                  )}
-                </li>
-              )
-            })}
-        </ul>
+                    </li>
+                  )
+                })}
+            </ul>
+          </>
+        )}
       </div>
     </div>
   )
@@ -3232,7 +3876,7 @@ export default function App() {
   const [cambiarPass, setCambiarPass] = useState('') // '' | 'normal' | 'recuperacion'
   const [ultimos, setUltimos] = useState(null) // Map empresa_id → fecha (ISO) de su última nota o cambio de estado
   const [orden, setOrden] = useState('') // '' = automático | 'antiguedad' | 'nombre'
-  const [mejorasAbierto, setMejorasAbierto] = useState(false)
+  const [mejorasAbierto, setMejorasAbierto] = useState(false) // false | 'novedades' | 'ideas'
   const [centros, setCentros] = useState([])
   const [vista, setVista] = useState('') // '' = mi centro | id de otro centro (solo lectura) | BOTE
   const [centroSel, setCentroSel] = useState('') // admin general: centro que está gestionando
@@ -3394,7 +4038,7 @@ export default function App() {
     visibles.sort((a, b) => (ultimoDe(a) || '').localeCompare(ultimoDe(b) || '') || a.nombre.localeCompare(b.nombre, 'es'))
   }
 
-  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
+  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo'], ['estadisticas', 'Estadísticas']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
     <button
       key={id}
       onClick={() => setTab(id)}
@@ -3427,7 +4071,7 @@ export default function App() {
                 <div className="hidden sm:flex w-8 h-8 rounded-full bg-white text-[#0d2b45] font-bold text-sm items-center justify-center" title={me.nombre}>
                   {(me.nombre || '?').trim().charAt(0).toUpperCase()}
                 </div>
-                <BotonMejoras me={me} onAbrir={() => setMejorasAbierto(true)} version={mejorasAbierto} />
+                <BotonMejoras me={me} onAbrir={setMejorasAbierto} version={mejorasAbierto} />
                 <button
                   onClick={() => setCambiarPass('normal')}
                   title="Cambiar mi contraseña"
@@ -3458,6 +4102,8 @@ export default function App() {
           <Reuniones me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin || !!me.secretaria} baremo={baremo} />
         ) : tab === 'seguimiento' && isAdmin ? (
           <Seguimiento users={usersCentro} companies={companies} nombreDe={nombreDe} version={claveEmpresas} onAbrir={setModal} />
+        ) : tab === 'estadisticas' && isAdmin ? (
+          <Estadisticas users={users} companies={companies} centros={centros} miCentro={miCentro} isSuper={isSuper} />
         ) : tab === 'equipo' && isAdmin ? (
           <Equipo users={usersCentro} centro={miCentro} isSuper={isSuper} centros={centros} companies={companies} me={me} baremo={baremo} onChanged={cargar} />
         ) : (
@@ -3753,7 +4399,7 @@ export default function App() {
         />
       )}
 
-      {mejorasAbierto && <Mejoras me={me} onClose={() => setMejorasAbierto(false)} />}
+      {mejorasAbierto && <Mejoras me={me} inicial={mejorasAbierto} onClose={() => setMejorasAbierto(false)} />}
 
       {cambiarPass && <CambiarContrasena recuperacion={cambiarPass === 'recuperacion'} onClose={() => setCambiarPass('')} />}
 
