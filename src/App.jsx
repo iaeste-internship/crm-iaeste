@@ -2705,8 +2705,9 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
 }
 
 // ---------- Estadísticas de contacto (por centro) ----------
-// Salen del historial. Un «contacto» es una nota o un cambio de estado; un seguimiento con cambio de
-// estado deja dos filas (estado + nota) con la misma hora y cuenta como UN contacto (claveSeg).
+// Salen del historial. Un «contacto» es un seguimiento CON NOTA escrita: un cambio de estado sin nota
+// (p. ej. el primer paso desde «Sin contactar» o clics de prueba) no cuenta. Un seguimiento con cambio
+// de estado deja dos filas (estado + nota) con la misma hora y cuenta como UN contacto (claveSeg).
 // Cada contacto cuenta para el centro de la persona que lo hizo, aunque la empresa sea del bote.
 // Colores fijos por centro (según su orden en la tabla centros): el mismo centro, el mismo color.
 const COLORES_SERIE = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948']
@@ -2908,7 +2909,7 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
     setHist(null); setErr('')
     traerTodo(() => supabase
       .from('historial')
-      .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, estado_nuevo, creado')
+      .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, estado_nuevo, detalle, creado')
       .in('accion', ['nota', 'estado'])
       .gte('creado', new Date(desde + 'T00:00:00').toISOString())
       .lt('creado', new Date(diaMas(hasta, 1) + 'T00:00:00').toISOString())
@@ -2927,7 +2928,8 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
   const centroDeUsuario = (id) => { const u = porId.get(id); return u ? (u.centro || 'TLMA') : null } // null = ya no está en el CRM
   const empresaPorId = new Map(companies.map((c) => [c.id, c]))
 
-  // Contactos únicos (estado + nota del mismo seguimiento = uno)
+  // Contactos únicos (estado + nota del mismo seguimiento = uno). Solo cuentan los que llevan
+  // una nota escrita: un cambio de estado suelto, sin nota, no es un contacto.
   const contactos = (() => {
     const m = new Map()
     for (const h of hist || []) {
@@ -2935,12 +2937,13 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
       const c = m.get(k) || {
         empresa_id: h.empresa_id, empresa_nombre: h.empresa_nombre, usuario_id: h.usuario_id,
         usuario_nombre: porId.get(h.usuario_id)?.nombre || h.usuario_nombre || 'Alguien que ya no está',
-        creado: h.creado, centro: centroDeUsuario(h.usuario_id), estado_nuevo: null,
+        creado: h.creado, centro: centroDeUsuario(h.usuario_id), estado_nuevo: null, conNota: false,
       }
       if (h.accion === 'estado' && h.estado_nuevo) c.estado_nuevo = h.estado_nuevo
+      if (h.accion === 'nota' && String(h.detalle ?? '').trim()) c.conNota = true
       m.set(k, c)
     }
-    return [...m.values()].sort((a, b) => a.creado.localeCompare(b.creado))
+    return [...m.values()].filter((c) => c.conNota).sort((a, b) => a.creado.localeCompare(b.creado))
   })()
   const enVista = todos ? contactos : contactos.filter((c) => c.centro === verEf)
   const miembros = todos ? users : users.filter((u) => (u.centro || 'TLMA') === verEf)
@@ -3201,7 +3204,7 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
           </Tarjeta>
 
           <p className="text-xs text-slate-400 leading-relaxed px-1">
-            Un contacto es una nota o un cambio de estado en una empresa; si se cambia el estado y se escribe la nota a la vez, cuenta como uno.
+            Un contacto es un seguimiento con nota escrita en una empresa; un cambio de estado sin nota no cuenta, y si se cambia el estado y se escribe la nota a la vez, cuenta como uno.
             Cada contacto cuenta para el centro de la persona que lo hizo, aunque la empresa venga del bote común. Los cambios de datos
             (teléfono, dirección…), las altas y las asignaciones no cuentan. Los CSV llevan exactamente lo que se ve con el centro y las fechas elegidas.
           </p>
