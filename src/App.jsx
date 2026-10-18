@@ -2819,7 +2819,7 @@ function BarrasSvg({ datos, svgRef, color = COLORES_SERIE[0], vacio = 'No hay da
               <text x={IZQ - 10} y={y + F / 2 + 4.5} textAnchor="end" fontSize="13"
                 fill={x.apagado ? '#94a3b8' : '#334155'} fontStyle={x.apagado ? 'italic' : 'normal'}>{recorta(x.label, cabe)}</text>
               {w > 0 && <rect x={IZQ} y={y + 7} width={w} height={F - 14} rx="4" fill={x.color || color} />}
-              <text x={IZQ + w + 8} y={y + F / 2 + 4.5} fontSize="13" fontWeight="700" fill={x.valor ? '#0f172a' : '#94a3b8'}>{x.valor}</text>
+              <text x={IZQ + w + 8} y={y + F / 2 + 4.5} fontSize="13" fontWeight="700" fill={x.valor ? '#0f172a' : '#94a3b8'}>{x.texto ?? x.valor}</text>
             </g>
           )
         })}
@@ -2951,7 +2951,15 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
   // Cifras de cabecera
   const activos = new Set(enVista.filter((c) => porId.has(c.usuario_id)).map((c) => c.usuario_id))
   const empresasTocadas = new Set(enVista.map((c) => c.empresa_id))
-  const becas = new Set(enVista.filter((c) => c.estado_nuevo === 'beca').map((c) => c.empresa_id)).size
+  // Una empresa puede dar varias becas: se suman las prácticas registradas (becasDe), no las empresas
+  const sumaBecas = (lista) => {
+    const m = new Map()
+    for (const c of lista) if (c.estado_nuevo === 'beca' && !m.has(c.empresa_id)) m.set(c.empresa_id, c.creado)
+    let t = 0
+    for (const [id, cuando] of m) { const e = empresaPorId.get(id); t += e ? becasDe(e, cuando) : 1 }
+    return t
+  }
+  const becas = sumaBecas(enVista)
   const media = empresasTocadas.size ? (enVista.length / empresasTocadas.size).toLocaleString('es-ES', { maximumFractionDigits: 1 }) : '0'
   const pct = (a, b) => b ? Math.round((a / b) * 100) : 0
 
@@ -2971,7 +2979,7 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
       id, nombre: id ? (centros.find((c) => c.id === id)?.nombre || id) : 'Gente que ya no está en el CRM',
       miembros: gente.length, activos: id ? act.size : 0, contactos: suyos.length,
       empresas: new Set(suyos.map((c) => c.empresa_id)).size,
-      becas: new Set(suyos.filter((c) => c.estado_nuevo === 'beca').map((c) => c.empresa_id)).size,
+      becas: sumaBecas(suyos),
     }
   }).filter((r) => r.id || r.contactos)
 
@@ -3011,7 +3019,16 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
   const estados = ESTADOS
     .map((e) => ({ id: e.id, label: e.label, valor: empresasVista.filter((c) => c.estado === e.id).length, oculto: e.oculto }))
     .filter((e) => !e.oculto || e.valor)
-    .map((e) => ({ ...e, tip: `${pct(e.valor, empresasVista.length)} % de las ${empresasVista.length} empresas` }))
+    .map((e) => {
+      const tip = `${pct(e.valor, empresasVista.length)} % de las ${empresasVista.length} empresas`
+      if (e.id !== 'beca' || !e.valor) return { ...e, tip }
+      // En «Beca conseguida» se ven las becas, no solo las empresas (una puede dar varias)
+      const nBecas = empresasVista.filter((c) => c.estado === 'beca').reduce((t, c) => t + becasDe(c), 0)
+      return nBecas === e.valor ? { ...e, tip } : {
+        ...e, texto: `${e.valor} · ${nBecas} becas`,
+        tip: `${e.valor} empresa${e.valor !== 1 ? 's' : ''} con ${nBecas} becas en total (${tip})`,
+      }
+    })
 
   const sufijo = `${todos ? 'todos' : verEf}-${desde}_${hasta}`
   const exportarContactos = () => descargarCsv(`contactos-${sufijo}`,
