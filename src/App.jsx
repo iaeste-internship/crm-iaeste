@@ -2174,7 +2174,10 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
 
   const asignarLote = async (u) => {
     setErr(''); setAsignando(u.id)
-    const ids = libres.slice(0, LOTE).map((c) => c.id)
+    // Se eligen al azar (no por orden alfabético), para que no se agoten primero las que empiezan por A
+    const azar = [...libres]
+    for (let i = azar.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [azar[i], azar[j]] = [azar[j], azar[i]] }
+    const ids = azar.slice(0, LOTE).map((c) => c.id)
     if (ids.length === 0) {
       setErr('No quedan empresas sin asignar en estado «Sin contactar».')
       setAsignando('')
@@ -2184,6 +2187,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
       .from('empresas')
       .update({ responsable: u.id, actualizado_por: me.nombre })
       .in('id', ids)
+      .is('responsable', null)
     setAsignando('')
     if (error) setErr(error.message)
     else onChanged()
@@ -2274,7 +2278,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
 
       <p className="text-xs text-slate-500 px-1">
         Bote común (compartido con todos los centros): <strong>{libres.length}</strong> empresas sin asignar en estado «Sin contactar» (sin contar las históricas, que se asignan a mano desde su ficha).
-        El botón <strong>+{LOTE}</strong> reparte las {LOTE} primeras a esa persona y <strong>−{LOTE}</strong> le quita {LOTE} de las que aún tiene sin contactar (vuelven al bote).
+        El botón <strong>+{LOTE}</strong> reparte {LOTE} al azar a esa persona y <strong>−{LOTE}</strong> le quita {LOTE} de las que aún tiene sin contactar (vuelven al bote).
       </p>
 
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
