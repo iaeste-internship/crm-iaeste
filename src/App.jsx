@@ -2956,7 +2956,8 @@ function Estadisticas({ users, companies, centros = [], miCentro, isSuper }) {
     const m = new Map()
     for (const c of lista) if (c.estado_nuevo === 'beca' && !m.has(c.empresa_id)) m.set(c.empresa_id, c.creado)
     let t = 0
-    for (const [id, cuando] of m) { const e = empresaPorId.get(id); t += e ? becasDe(e, cuando) : 1 }
+    // Como en el Ranking: solo empresas que siguen existiendo y siguen en «Beca conseguida»
+    for (const [id, cuando] of m) { const e = empresaPorId.get(id); if (e?.estado === 'beca') t += becasDe(e, cuando) }
     return t
   }
   const becas = sumaBecas(enVista)
