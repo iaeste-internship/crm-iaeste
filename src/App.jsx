@@ -5,6 +5,7 @@ import {
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
   History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
   Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock, BarChart3, Sparkles,
+  CalendarDays, ChevronLeft, ExternalLink, Handshake,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -105,8 +106,9 @@ const claveSeg = (h) => `${h.empresa_id}|${h.usuario_id}|${h.creado}`
 const PUNTOS = {
   quincena: 10,       // seguimiento quincenal cumplido (ver QUINCENA); es aparte de las empresas
   reunion: 5,         // asistencia a una reunión (cada reunión puede tener otro valor)
+  patrocinio: 100,    // patrocinio firmado, para quien lo consigue
 }
-const PUNTOS_DEFECTO = { estados: PUNTOS_ESTADO, quincena: PUNTOS.quincena, reunion: PUNTOS.reunion }
+const PUNTOS_DEFECTO = { estados: PUNTOS_ESTADO, quincena: PUNTOS.quincena, reunion: PUNTOS.reunion, patrocinio: PUNTOS.patrocinio }
 // Estados que cuentan como «contactada» en los resúmenes; el resto con puntos cuentan como «cerrada»
 const CONTACTADAS = ['no_contesta', 'mail_enviado', 'interesados', 'segundo_plazo']
 // Baremo de un centro: el suyo guardado en la tabla centros, completado con el de por defecto
@@ -116,6 +118,7 @@ const baremoDe = (centros = [], id) => {
     estados: { ...PUNTOS_DEFECTO.estados, ...(p.estados || {}) },
     quincena: Number.isFinite(p.quincena) ? p.quincena : PUNTOS_DEFECTO.quincena,
     reunion: Number.isFinite(p.reunion) ? p.reunion : PUNTOS_DEFECTO.reunion,
+    patrocinio: Number.isFinite(p.patrocinio) ? p.patrocinio : PUNTOS_DEFECTO.patrocinio,
     propio: !!centros.find((c) => c.id === id)?.puntos,
   }
 }
@@ -1391,7 +1394,7 @@ function GraficaEmpresas({ users, companies }) {
 // llegó a ese estado (último cambio de estado del historial). Si no hay registro de cuándo,
 // solo cuenta en periodos que empiezan a inicio de curso o antes.
 // Además, las quincenas cerradas dentro del periodo suman PUNTOS.quincena si se cumplieron.
-function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO, asistencias = [] }) {
+function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO, asistencias = [], patrocinios = [] }) {
   const ini = new Date(desde + 'T00:00:00')
   const fin = new Date(diaMas(hasta, 1) + 'T00:00:00')
   const nombreDeUsuario = (id) => users.find((u) => u.id === id)?.nombre || '—'
@@ -1404,7 +1407,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
   }
 
   const resumen = {}
-  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, reuniones: 0, puntos: 0, filas: [] })
+  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, reuniones: 0, patrocinios: 0, puntos: 0, filas: [] })
 
   for (const c of companies) {
     const pts = baremo.estados[c.estado] ?? 0
@@ -1447,6 +1450,15 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
     r.filas.push({ id: `r-${a.reunion_id}-${a.usuario_id}`, tipo: 'reunion', empresa_nombre: a.titulo, creado: a.fecha + 'T12:00:00', puntos: a.puntos || 0 })
   }
 
+  // Patrocinios firmados: cuentan el día de la firma, para quien lo ha conseguido
+  for (const p of patrocinios) {
+    if (!p.usuario_id || !p.fecha || p.fecha < desde || p.fecha > hasta) continue
+    const r = de(p.usuario_id)
+    r.patrocinios++
+    r.puntos += baremo.patrocinio
+    r.filas.push({ id: `p-${p.id}`, tipo: 'patrocinio', empresa_nombre: p.nombre, creado: p.fecha + 'T12:00:00', puntos: baremo.patrocinio })
+  }
+
   users.forEach((u) => de(u.id))
   for (const r of Object.values(resumen)) r.filas.sort((a, b) => new Date(b.creado || 0) - new Date(a.creado || 0))
   // Solo la gente que se ha pasado en «users» (la del centro): cada centro tiene sus propios puntos
@@ -1467,6 +1479,8 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
   const [limpiando, setLimpiando] = useState(false)
   const [asistencias, setAsistencias] = useState([])
   useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro, recarga])
+  const [patrocinios, setPatrocinios] = useState([])
+  useEffect(() => { traerPatrocinios(centro).then(setPatrocinios) }, [centro, recarga])
 
   useEffect(() => {
     setTodo(null); setErr('')
@@ -1525,11 +1539,11 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
     }
   }
 
-  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo, asistencias })
+  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo, asistencias, patrocinios })
 
   const exportar = () => {
-    const cab = ['Persona', 'Empresas contactadas', 'Empresas cerradas', 'Becas', 'Quincenas cumplidas', 'Reuniones', 'Puntos']
-    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.reuniones, d.puntos])]
+    const cab = ['Persona', 'Empresas contactadas', 'Empresas cerradas', 'Becas', 'Quincenas cumplidas', 'Reuniones', 'Patrocinios', 'Puntos']
+    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.reuniones, d.patrocinios, d.puntos])]
       .map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';'))
       .join('\n')
     const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }))
@@ -1610,6 +1624,7 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                 <th className="font-medium pb-2">Becas</th>
                 <th className="font-medium pb-2" title="Quincenas de seguimiento cumplidas">Quinc.</th>
                 <th className="font-medium pb-2" title="Reuniones a las que ha ido">Reun.</th>
+                <th className="font-medium pb-2" title="Patrocinios firmados que ha conseguido">Patr.</th>
                 <th className="font-medium pb-2 pl-3">Puntos</th>
               </tr>
             </thead>
@@ -1629,11 +1644,12 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                     <td className={d.becas ? 'text-emerald-700 font-semibold' : 'text-slate-300'}>{d.becas}</td>
                     <td className={d.quincenas ? 'text-indigo-700 font-semibold' : 'text-slate-300'}>{d.quincenas}</td>
                     <td className={d.reuniones ? 'text-teal-700 font-semibold' : 'text-slate-300'}>{d.reuniones}</td>
+                    <td className={d.patrocinios ? 'text-amber-700 font-semibold' : 'text-slate-300'}>{d.patrocinios}</td>
                     <td className="font-bold text-slate-900 pl-3">{d.puntos}</td>
                   </tr>
                   {abierto === d.id && (
                     <tr>
-                      <td colSpan={7} className="bg-slate-50 px-3 py-3">
+                      <td colSpan={8} className="bg-slate-50 px-3 py-3">
                         {d.filas.length === 0 ? (
                           <p className="text-xs text-slate-400">Sin puntos en este periodo.</p>
                         ) : (
@@ -1644,6 +1660,8 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                                   ? <Badge estadoId={h.estado} />
                                   : h.tipo === 'reunion'
                                     ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-teal-50 text-teal-700 border-teal-200">Reunión</span>
+                                  : h.tipo === 'patrocinio'
+                                    ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-amber-50 text-amber-800 border-amber-300">Patrocinio</span>
                                     : <span className={`shrink-0 px-1.5 py-0.5 rounded border font-medium ${accionDe('quincena').color}`}>Quincena</span>}
                                 <span className="flex-1 min-w-0 text-slate-600 truncate">
                                   <strong className="text-slate-800">{h.empresa_nombre}</strong>{h.detalle ? ` · ${h.detalle}` : ''}
@@ -1674,6 +1692,7 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
             haber escrito una nota o cambiado el estado de todas tus empresas en seguimiento; se suma al cerrar la quincena).</>
           : <> Este centro no da puntos por la quincena de seguimiento.</>}
         {' '}Cada reunión a la que se va suma sus puntos (por defecto {baremo.reunion}), el día de la reunión.
+        {' '}Cada patrocinio firmado suma +{baremo.patrocinio} a quien lo consigue, el día de la firma.
         {' '}Se cambia en «Sistema de puntos», más abajo. Haz clic en una persona para ver el desglose.
       </p>
     </div>
@@ -1690,6 +1709,8 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
 
   const [asistencias, setAsistencias] = useState([])
   useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro])
+  const [patrocinios, setPatrocinios] = useState([])
+  useEffect(() => { traerPatrocinios(centro).then(setPatrocinios) }, [centro])
 
   useEffect(() => {
     setDatos(null); setErr('')
@@ -1707,7 +1728,7 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
   }, [hasta])
 
   const lista = datos
-    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo, asistencias })
+    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo, asistencias, patrocinios })
       .lista.filter((d) => users.some((u) => u.id === d.id))
     : []
   // Misma puntuación = mismo puesto
@@ -1764,6 +1785,7 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
         Cada empresa que llevas puntúa según su estado actual: {textoBaremo(baremo)}.
         {baremo.quincena > 0 && <> Quincena de seguimiento cumplida: +{baremo.quincena}.</>}
         {' '}Cada reunión a la que vas suma sus puntos (normalmente +{baremo.reunion}).
+        {' '}Patrocinio firmado: +{baremo.patrocinio}.
       </p>
     </div>
   )
@@ -1981,6 +2003,867 @@ function AvisoReunion({ me, centro, onVer }) {
   )
 }
 
+// ---------- Calendario: fechas oficiales de IAESTE, eventos del centro y reuniones de cada persona ----------
+// Tabla eventos (migracion_calendario.sql). visibilidad:
+//   'oficial'  → todos los centros (calendario de IAESTE España); solo lo crean/editan los admins generales
+//   'centro'   → todo el centro; lo crea cualquiera del centro y lo edita quien lo creó o un admin del centro
+//   'personal' → solo quien lo crea
+// Cada evento sale como recordatorio en el CRM desde «avisar_dias» días antes hasta que termina.
+const CATEGORIAS_EV = [
+  { id: 'subasta', label: 'Subasta', chip: 'bg-rose-50 text-rose-700 border-rose-200', dot: 'bg-rose-500', avisar: 7 },
+  { id: 'asamblea', label: 'Asamblea', chip: 'bg-violet-50 text-violet-700 border-violet-200', dot: 'bg-violet-500', avisar: 14 },
+  { id: 'comision', label: 'Comisión', chip: 'bg-indigo-50 text-indigo-700 border-indigo-200', dot: 'bg-indigo-500', avisar: 7 },
+  { id: 'intercambio', label: 'Intercambio', chip: 'bg-sky-50 text-sky-700 border-sky-200', dot: 'bg-sky-500', avisar: 7 },
+  { id: 'plazo', label: 'Plazo', chip: 'bg-amber-50 text-amber-800 border-amber-300', dot: 'bg-amber-500', avisar: 3 },
+  { id: 'publicacion', label: 'Publicación', chip: 'bg-teal-50 text-teal-700 border-teal-200', dot: 'bg-teal-500', avisar: 1 },
+  { id: 'empresa', label: 'Reunión con empresa', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', avisar: 1 },
+  { id: 'otro', label: 'Otro', chip: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-400', avisar: 1 },
+]
+const categoriaEv = (id) => CATEGORIAS_EV.find((c) => c.id === id) || CATEGORIAS_EV[CATEGORIAS_EV.length - 1]
+const AVISAR_OPC = [[0, 'El mismo día'], [1, '1 día antes'], [2, '2 días antes'], [3, '3 días antes'], [7, '1 semana antes'], [10, '10 días antes'], [14, '2 semanas antes'], [30, '1 mes antes']]
+const textoAvisar = (n) => AVISAR_OPC.find(([d]) => d === n)?.[1] || `${n} días antes`
+const DIAS_SEMANA = ['L', 'M', 'X', 'J', 'V', 'S', 'D']
+// Fecha de hoy en hora de España (no en UTC), para que el aviso «hoy» cambie a medianoche
+const hoyLocal = () => isoDia(new Date())
+const finEv = (ev) => ev.fecha_fin || ev.fecha
+const horaCorta = (h) => (h ? String(h).slice(0, 5) : '')
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1)
+const mesCorto = (iso) => new Date(iso + 'T00:00:00').toLocaleDateString('es-ES', { month: 'short' }).replace('.', '')
+const rangoEv = (ev) => {
+  const base = ev.fecha_fin ? `${fechaCorta(ev.fecha)} – ${fechaCorta(ev.fecha_fin)}` : fechaLarga(ev.fecha)
+  return ev.hora ? `${base} · ${horaCorta(ev.hora)}` : base
+}
+const cuandoEv = (ev, hoy) => {
+  const d = diasEntre(hoy, ev.fecha)
+  if (finEv(ev) < hoy) { const n = diasEntre(finEv(ev), hoy); return n === 1 ? 'ayer' : `hace ${n} días` }
+  if (d < 0) return 'en curso'
+  if (d === 0) return 'hoy'
+  if (d === 1) return 'mañana'
+  return `en ${d} días`
+}
+const etiquetaVis = (ev, me) => ev.visibilidad === 'oficial' ? 'IAESTE España'
+  : ev.visibilidad === 'centro' ? `Todo ${ev.centro}` : (ev.creado_por === me.id ? 'Solo tú' : 'Personal')
+// Qué eventos se ven en este centro (por RLS un admin general recibe los de todos los centros)
+const eventoMio = (ev, me, centro) =>
+  ev.visibilidad === 'oficial' || ev.creado_por === me.id || (ev.visibilidad === 'centro' && ev.centro === centro)
+// Mismas reglas que las políticas de la tabla eventos
+const puedeTocarEv = (ev, me) => ev.creado_por === me.id
+  || (me.rol === 'superadmin' && ev.visibilidad !== 'personal')
+  || (me.rol === 'admin' && ev.visibilidad === 'centro' && ev.centro === (me.centro || 'TLMA'))
+const errorEventos = (m) => faltaTabla(m) ? 'Falta ejecutar migracion_calendario.sql en Supabase.'
+  : /row-level security/i.test(m || '') ? 'No tienes permiso para guardar este evento así.' : m
+
+// Enlace «Añadir a Google Calendar»: así cada uno recibe la notificación en el móvil
+const googleCalUrl = (ev) => {
+  const c = (iso) => iso.replace(/-/g, '')
+  let dates
+  if (ev.hora) {
+    const [h, m] = horaCorta(ev.hora).split(':')
+    const fin = String(Math.min(Number(h) + 1, 23)).padStart(2, '0')
+    dates = `${c(ev.fecha)}T${h}${m}00/${c(finEv(ev))}T${fin}${m}00`
+  } else {
+    dates = `${c(ev.fecha)}/${c(diaMas(finEv(ev), 1))}`
+  }
+  const p = new URLSearchParams({ action: 'TEMPLATE', text: ev.titulo, dates, ctz: 'Europe/Madrid' })
+  if (ev.lugar) p.set('location', ev.lugar)
+  if (ev.descripcion) p.set('details', ev.descripcion)
+  return `https://calendar.google.com/calendar/render?${p}`
+}
+
+// Avisos que cada navegador ya ha cerrado: { idEvento: 'antes' | 'dia' }.
+// Cerrar un aviso los días previos lo oculta hasta el día del evento, que vuelve a salir una vez.
+const CLAVE_OCULTOS = 'crm-calendario-ocultos'
+const leerOcultos = () => { try { return JSON.parse(localStorage.getItem(CLAVE_OCULTOS)) || {} } catch { return {} } }
+const guardarOcultos = (o) => { try { localStorage.setItem(CLAVE_OCULTOS, JSON.stringify(o)) } catch { /* sin almacenamiento: no pasa nada */ } }
+
+// Recordatorios que salen arriba en todas las pestañas
+function AvisoCalendario({ me, centro, version, mostrar = true, onVer, onContar }) {
+  const [eventos, setEventos] = useState([])
+  const [ocultos, setOcultos] = useState(leerOcultos)
+  const hoy = hoyLocal()
+  useEffect(() => {
+    let vivo = true
+    // Desde hace 60 días (eventos de varios días que siguen en curso) hasta dentro de 61 (el aviso más largo es de 1 mes)
+    supabase.from('eventos').select('*').gte('fecha', diaMas(hoy, -60)).lte('fecha', diaMas(hoy, 61))
+      .order('fecha').order('hora', { nullsFirst: true })
+      .then(({ data, error }) => { if (vivo) setEventos(error ? [] : (data || [])) })
+    return () => { vivo = false }
+  }, [me.id, centro, version, hoy])
+
+  const activos = eventos.filter((ev) => eventoMio(ev, me, centro) && finEv(ev) >= hoy && diasEntre(hoy, ev.fecha) <= ev.avisar_dias)
+  const fase = (ev) => (ev.fecha > hoy ? 'antes' : 'dia')
+  const visibles = activos.filter((ev) => ocultos[ev.id] !== fase(ev))
+  useEffect(() => { onContar?.(activos.length) }, [activos.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const ocultar = (ev) => {
+    const vivos = new Set(activos.map((a) => String(a.id)))
+    const o = Object.fromEntries(Object.entries(leerOcultos()).filter(([id]) => vivos.has(id)))
+    o[ev.id] = fase(ev)
+    guardarOcultos(o); setOcultos(o)
+  }
+
+  if (!mostrar || !visibles.length) return null
+  return (
+    <div className="mb-4 rounded-2xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-950">
+      <div className="flex items-center gap-2 mb-1.5">
+        <CalendarDays className="w-4 h-4 shrink-0 text-indigo-600" />
+        <p className="font-semibold flex-1">Recordatorios del calendario</p>
+        <button onClick={onVer} className="text-xs font-semibold text-indigo-700 underline">Ver calendario</button>
+      </div>
+      <ul className="space-y-1">
+        {visibles.slice(0, 4).map((ev) => {
+          const cuando = cuandoEv(ev, hoy)
+          const urgente = cuando === 'hoy' || cuando === 'en curso'
+          return (
+            <li key={ev.id} className="flex items-start gap-2 min-w-0">
+              <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${categoriaEv(ev.categoria).dot}`} />
+              <p className="flex-1 min-w-0">
+                <strong className={urgente ? 'text-rose-700' : ''}>{cap(cuando)}</strong> · {ev.titulo}
+                {ev.hora && <> · {horaCorta(ev.hora)}</>}
+                {ev.lugar && <span className="text-indigo-900/60"> · {ev.lugar}</span>}
+              </p>
+              <button onClick={() => ocultar(ev)} title={fase(ev) === 'antes' ? 'Ocultar hasta el día del evento' : 'Ocultar'}
+                className="p-1 -mt-0.5 rounded-full text-indigo-400 hover:text-indigo-700 hover:bg-indigo-100">
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+      {visibles.length > 4 && <button onClick={onVer} className="mt-1 text-xs text-indigo-700 underline">y {visibles.length - 4} más</button>}
+    </div>
+  )
+}
+
+function EventoModal({ evento, fechaInicial, me, centro, companies, onSaved, onClose }) {
+  const isSuper = me.rol === 'superadmin'
+  const [f, setF] = useState(() => evento ? {
+    titulo: evento.titulo, categoria: evento.categoria, visibilidad: evento.visibilidad, fecha: evento.fecha,
+    fecha_fin: evento.fecha_fin || '', hora: horaCorta(evento.hora), lugar: evento.lugar || '',
+    avisar_dias: evento.avisar_dias, descripcion: evento.descripcion || '',
+  } : {
+    titulo: '', categoria: 'empresa', visibilidad: 'centro', fecha: fechaInicial || hoyLocal(),
+    fecha_fin: '', hora: '', lugar: '', avisar_dias: categoriaEv('empresa').avisar, descripcion: '',
+  })
+  const [empresa, setEmpresa] = useState(() => {
+    if (!evento?.empresa_id) return null
+    const c = companies.find((x) => x.id === evento.empresa_id)
+    return { id: evento.empresa_id, nombre: c?.nombre || 'Empresa vinculada' }
+  })
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value })
+  const cambiarCategoria = (e) => { const c = categoriaEv(e.target.value); setF({ ...f, categoria: c.id, avisar_dias: c.avisar }) }
+  const elegirEmpresa = (e) => {
+    setEmpresa(e)
+    if (e && !f.titulo.trim()) setF({ ...f, titulo: `Reunión con ${e.nombre}` })
+  }
+
+  const guardar = async () => {
+    const titulo = f.titulo.trim()
+    if (!titulo) { setErr('Ponle un título.'); return }
+    if (!f.fecha) { setErr('Falta la fecha.'); return }
+    if (f.fecha_fin && f.fecha_fin < f.fecha) { setErr('La fecha de fin no puede ser anterior a la de inicio.'); return }
+    const datos = {
+      titulo: titulo.slice(0, 160), categoria: f.categoria, visibilidad: f.visibilidad,
+      centro: f.visibilidad === 'centro' ? (evento?.visibilidad === 'centro' ? evento.centro : centro) : null,
+      fecha: f.fecha, fecha_fin: f.fecha_fin && f.fecha_fin !== f.fecha ? f.fecha_fin : null, hora: f.hora || null,
+      lugar: f.lugar.trim().slice(0, 160) || null, avisar_dias: Number(f.avisar_dias) || 0,
+      descripcion: f.descripcion.trim().slice(0, 2000) || null, empresa_id: empresa?.id || null,
+    }
+    setBusy(true); setErr('')
+    const { error } = evento
+      ? await supabase.from('eventos').update(datos).eq('id', evento.id)
+      : await supabase.from('eventos').insert({ ...datos, creado_por: me.id })
+    setBusy(false)
+    if (error) { setErr(errorEventos(error.message)); return }
+    onSaved(evento ? 'Evento guardado ✓' : 'Evento añadido al calendario ✓')
+  }
+  const borrar = async () => {
+    if (!confirm(`¿Borrar «${evento.titulo}» del calendario?`)) return
+    setBusy(true)
+    const { error } = await supabase.from('eventos').delete().eq('id', evento.id)
+    setBusy(false)
+    if (error) { setErr(errorEventos(error.message)); return }
+    onSaved('Evento borrado')
+  }
+
+  const sel = 'w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white'
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-bold text-slate-900 flex items-center gap-2">
+            <CalendarDays className="w-4 h-4 text-slate-400" />{evento ? 'Editar evento' : 'Nuevo evento'}
+          </h2>
+          <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div className="sm:col-span-2">
+            <Label>Título</Label>
+            <Input value={f.titulo} onChange={set('titulo')} placeholder="p. ej. Reunión con Indra" autoFocus />
+          </div>
+          <div>
+            <Label>Tipo</Label>
+            <select value={f.categoria} onChange={cambiarCategoria} className={sel}>
+              {CATEGORIAS_EV.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label>Quién lo ve</Label>
+            <select value={f.visibilidad} onChange={set('visibilidad')} className={sel}>
+              <option value="personal">Solo yo</option>
+              <option value="centro">Todo {evento?.visibilidad === 'centro' ? evento.centro : centro}</option>
+              {(isSuper || f.visibilidad === 'oficial') && <option value="oficial">Oficial · todos los centros</option>}
+            </select>
+          </div>
+          <div>
+            <Label>Fecha</Label>
+            <Input type="date" value={f.fecha} onChange={set('fecha')} />
+          </div>
+          <div>
+            <Label>Hora (opcional)</Label>
+            <Input type="time" value={f.hora} onChange={set('hora')} />
+          </div>
+          <div>
+            <Label>Hasta (si dura varios días)</Label>
+            <Input type="date" value={f.fecha_fin} min={f.fecha} onChange={set('fecha_fin')} />
+          </div>
+          <div>
+            <Label>Avisar</Label>
+            <select value={f.avisar_dias} onChange={set('avisar_dias')} className={sel}>
+              {AVISAR_OPC.map(([d, l]) => <option key={d} value={d}>{l}</option>)}
+              {!AVISAR_OPC.some(([d]) => d === Number(f.avisar_dias)) && <option value={f.avisar_dias}>{textoAvisar(Number(f.avisar_dias))}</option>}
+            </select>
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Lugar</Label>
+            <Input value={f.lugar} onChange={set('lugar')} placeholder="Dirección, sala, online…" />
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Empresa (opcional)</Label>
+            <BuscadorEmpresa companies={companies} valor={empresa} onCambiar={elegirEmpresa} placeholder="Buscar empresa…" />
+          </div>
+          <div className="sm:col-span-2">
+            <Label>Notas</Label>
+            <textarea value={f.descripcion} onChange={set('descripcion')} rows={3}
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+          </div>
+        </div>
+        {err && <p className="text-sm text-rose-600">{err}</p>}
+        <div className="flex gap-2 justify-end">
+          {evento && <Btn variant="danger" onClick={borrar} disabled={busy} className="mr-auto"><Trash2 className="w-4 h-4" /></Btn>}
+          <Btn variant="ghost" onClick={onClose}>Cancelar</Btn>
+          <Btn onClick={guardar} disabled={busy}><Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}</Btn>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Calendario({ me, users, centro, companies, misEmpresas, version, onCambio, onAbrirEmpresa }) {
+  const hoy = hoyLocal()
+  const [mes, setMes] = useState(() => hoy.slice(0, 7)) // 'AAAA-MM'
+  const [eventos, setEventos] = useState(null)
+  const [err, setErr] = useState('')
+  const [filtro, setFiltro] = useState('todos') // todos | oficial | centro | personal
+  const [dia, setDia] = useState('')            // día marcado en la cuadrícula
+  const [abierto, setAbierto] = useState('')    // evento desplegado en la lista
+  const [verTodos, setVerTodos] = useState(false)
+  const [editando, setEditando] = useState(null) // null | { fecha } (nuevo) | evento
+
+  useEffect(() => {
+    let vivo = true
+    traerTodo(() => supabase.from('eventos').select('*').order('fecha').order('hora', { nullsFirst: true }).order('id'))
+      .then((d) => { if (vivo) { setErr(''); setEventos(d) } })
+      .catch((e) => { if (vivo) { setErr(errorEventos(e.message)); setEventos([]) } })
+    return () => { vivo = false }
+  }, [centro, version])
+
+  const mios = (eventos || []).filter((ev) => eventoMio(ev, me, centro))
+    .sort((a, b) => a.fecha.localeCompare(b.fecha) || horaCorta(a.hora).localeCompare(horaCorta(b.hora)) || a.id - b.id)
+  const filtrados = mios.filter((ev) => filtro === 'todos' || ev.visibilidad === filtro)
+  const enDia = (iso) => filtrados.filter((ev) => ev.fecha <= iso && finEv(ev) >= iso)
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre
+
+  // Cuadrícula del mes, empezando en lunes
+  const [anio, m] = mes.split('-').map(Number)
+  const primero = new Date(anio, m - 1, 1)
+  const celdas = [
+    ...Array((primero.getDay() + 6) % 7).fill(null),
+    ...Array.from({ length: new Date(anio, m, 0).getDate() }, (_, i) => isoDia(new Date(anio, m - 1, i + 1))),
+  ]
+  while (celdas.length % 7) celdas.push(null)
+  const moverMes = (n) => { setMes(isoDia(new Date(anio, m - 1 + n, 1)).slice(0, 7)); setDia('') }
+
+  const proximos = filtrados.filter((ev) => finEv(ev) >= hoy)
+  const lista = dia ? enDia(dia) : (verTodos ? proximos : proximos.slice(0, 10))
+
+  const fila = (ev) => {
+    const cat = categoriaEv(ev.categoria)
+    const abiertoEv = abierto === ev.id
+    const emp = ev.empresa_id && companies.find((c) => c.id === ev.empresa_id)
+    const cuando = cuandoEv(ev, hoy)
+    const pasado = finEv(ev) < hoy
+    const pronto = !pasado && diasEntre(hoy, ev.fecha) <= ev.avisar_dias
+    const autor = ev.creado_por ? nombre(ev.creado_por) : null
+    return (
+      <div key={ev.id} className={`px-4 sm:px-5 py-3.5 ${pasado ? 'opacity-60' : ''}`}>
+        <button onClick={() => setAbierto(abiertoEv ? '' : ev.id)} className="w-full text-left flex items-start gap-3">
+          <div className="w-11 shrink-0 text-center rounded-lg border border-slate-200 py-1">
+            <p className="text-[10px] uppercase text-slate-400 font-semibold leading-none">{mesCorto(ev.fecha)}</p>
+            <p className="text-lg font-bold text-slate-900 leading-tight">{Number(ev.fecha.slice(8))}</p>
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-slate-900">{ev.titulo}</p>
+            <p className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+              <span className={`px-1.5 py-0.5 rounded border text-[11px] font-medium ${cat.chip}`}>{cat.label}</span>
+              <span>{rangoEv(ev)}</span>
+              {ev.lugar && <span className="inline-flex items-center gap-0.5"><MapPin className="w-3 h-3" />{ev.lugar}</span>}
+              <span className="text-slate-400">· {etiquetaVis(ev, me)}</span>
+            </p>
+          </div>
+          <span className={`shrink-0 text-xs whitespace-nowrap ${cuando === 'hoy' || cuando === 'en curso' ? 'text-rose-600 font-semibold' : pronto ? 'text-indigo-600 font-semibold' : 'text-slate-400'}`}>
+            {cap(cuando)}
+          </span>
+        </button>
+        {abiertoEv && (
+          <div className="mt-2.5 ml-14 space-y-2">
+            {ev.descripcion && <p className="text-sm text-slate-600 whitespace-pre-line">{ev.descripcion}</p>}
+            {ev.empresa_id && (emp ? (
+              <button onClick={() => onAbrirEmpresa(emp)} className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-slate-200 text-xs text-slate-700 hover:bg-slate-50">
+                <Building2 className="w-3.5 h-3.5 text-slate-400" />{emp.nombre}<ChevronRight className="w-3 h-3 text-slate-300" />
+              </button>
+            ) : <p className="text-xs text-slate-400">Vinculado a una empresa que no puedes ver.</p>)}
+            <p className="text-xs text-slate-400">
+              Aviso: {textoAvisar(ev.avisar_dias).toLowerCase()}
+              {ev.visibilidad === 'oficial' ? ' · Calendario de IAESTE España' : autor ? ` · Añadido por ${autor}` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <a href={googleCalUrl(ev)} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                <ExternalLink className="w-3.5 h-3.5" />Añadir a Google Calendar
+              </a>
+              {puedeTocarEv(ev, me) && (
+                <button onClick={() => setEditando(ev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                  <Pencil className="w-3.5 h-3.5" />Editar
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  const pastilla = (activo) => `shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs border transition-colors ${
+    activo ? 'bg-[#0e2d4d] text-white border-[#0e2d4d] font-bold' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 font-medium'}`
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)] flex flex-wrap items-start gap-3">
+        <div className="flex-1 min-w-[14rem]">
+          <h2 className="text-lg font-bold flex items-center gap-2"><CalendarDays className="w-5 h-5 text-teal-300" />Calendario · {centro}</h2>
+          <p className="mt-1 text-sm text-white/75">
+            Fechas oficiales de IAESTE (subastas, asambleas, comisiones, plazos de ofertas) y lo que añada cada uno.
+            Si tienes una reunión con una empresa, apúntala aquí: el CRM te avisa antes.
+          </p>
+        </div>
+        <button onClick={() => setEditando({ fecha: dia || hoy })}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-white text-[#0e2d4d] text-sm font-semibold hover:bg-slate-100">
+          <Plus className="w-4 h-4" />Añadir evento
+        </button>
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+
+      <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+        {[['todos', 'Todo'], ['oficial', 'IAESTE España'], ['centro', `Mi centro (${centro})`], ['personal', 'Solo míos']].map(([id, label]) => (
+          <button key={id} onClick={() => setFiltro(id)} className={pastilla(filtro === id)}>{label}</button>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <button onClick={() => moverMes(-1)} title="Mes anterior" className="p-1.5 rounded-full text-slate-500 hover:bg-slate-100"><ChevronLeft className="w-4 h-4" /></button>
+          <p className="flex-1 text-center font-bold text-slate-900">
+            {cap(primero.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' }))}
+          </p>
+          {mes !== hoy.slice(0, 7) && (
+            <button onClick={() => { setMes(hoy.slice(0, 7)); setDia('') }} className="px-2.5 py-1 rounded-full border border-slate-300 text-xs text-slate-600 hover:bg-slate-50">Hoy</button>
+          )}
+          <button onClick={() => moverMes(1)} title="Mes siguiente" className="p-1.5 rounded-full text-slate-500 hover:bg-slate-100"><ChevronRight className="w-4 h-4" /></button>
+        </div>
+        <div className="grid grid-cols-7 border-t border-slate-100">
+          {DIAS_SEMANA.map((d) => (
+            <div key={d} className="py-1.5 text-center text-[11px] font-semibold text-slate-400 border-b border-slate-100">{d}</div>
+          ))}
+          {celdas.map((iso, i) => {
+            const borde = `${i % 7 !== 6 ? 'border-r' : ''} border-b border-slate-100`
+            if (!iso) return <div key={`v${i}`} className={`min-h-[3.25rem] sm:min-h-[5.75rem] bg-slate-50/60 ${borde}`} />
+            const evs = enDia(iso)
+            const esHoy = iso === hoy
+            const elegido = iso === dia
+            return (
+              <button key={iso} onClick={() => { setDia(elegido ? '' : iso); setAbierto('') }}
+                className={`min-h-[3.25rem] sm:min-h-[5.75rem] p-1 text-left flex flex-col items-start gap-0.5 min-w-0 transition-colors ${borde} ${elegido ? 'bg-blue-50 ring-2 ring-inset ring-[#0e2d4d]/40' : 'hover:bg-slate-50'}`}>
+                <span className={`text-xs w-6 h-6 shrink-0 inline-flex items-center justify-center rounded-full ${esHoy ? 'bg-[#0e2d4d] text-white font-bold' : 'text-slate-600'}`}>
+                  {Number(iso.slice(8))}
+                </span>
+                <span className="sm:hidden flex flex-wrap gap-0.5 px-0.5">
+                  {evs.slice(0, 4).map((ev) => <span key={ev.id} className={`w-1.5 h-1.5 rounded-full ${categoriaEv(ev.categoria).dot}`} />)}
+                </span>
+                <span className="hidden sm:flex flex-col gap-0.5 w-full min-w-0">
+                  {evs.slice(0, 3).map((ev) => (
+                    <span key={ev.id} title={ev.titulo} className={`block truncate px-1 py-px rounded border text-[11px] leading-tight ${categoriaEv(ev.categoria).chip}`}>
+                      {ev.hora ? `${horaCorta(ev.hora)} ` : ''}{ev.titulo}
+                    </span>
+                  ))}
+                  {evs.length > 3 && <span className="text-[10px] text-slate-400 px-1">+{evs.length - 3} más</span>}
+                </span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-1 px-4 py-2.5 text-[11px] text-slate-500">
+          {CATEGORIAS_EV.filter((c) => c.id !== 'otro').map((c) => (
+            <span key={c.id} className="inline-flex items-center gap-1"><span className={`w-2 h-2 rounded-full ${c.dot}`} />{c.label}</span>
+          ))}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)]">
+        <div className="flex items-center gap-2 px-4 sm:px-5 py-3 border-b border-slate-100">
+          <p className="flex-1 text-sm font-bold text-slate-900">{dia ? cap(fechaLarga(dia)) : 'Próximos eventos'}</p>
+          {dia && (
+            <>
+              <button onClick={() => setEditando({ fecha: dia })} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full border border-slate-300 text-xs text-slate-600 hover:bg-slate-50">
+                <Plus className="w-3.5 h-3.5" />Añadir este día
+              </button>
+              <button onClick={() => setDia('')} title="Volver a próximos" className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+            </>
+          )}
+        </div>
+        <div className="divide-y divide-slate-100">
+          {eventos === null ? <p className="p-6 text-sm text-slate-400">Cargando…</p>
+            : lista.length === 0 ? <p className="p-6 text-sm text-slate-400">{dia ? 'Nada este día.' : 'No hay eventos próximos.'}</p>
+            : lista.map(fila)}
+        </div>
+        {!dia && proximos.length > 10 && (
+          <button onClick={() => setVerTodos(!verTodos)} className="w-full py-2.5 text-xs font-medium text-slate-500 hover:bg-slate-50 border-t border-slate-100 rounded-b-2xl">
+            {verTodos ? 'Ver menos' : `Ver los ${proximos.length} próximos`}
+          </button>
+        )}
+      </div>
+
+      {editando && (
+        <EventoModal
+          evento={editando.id ? editando : null}
+          fechaInicial={editando.id ? undefined : editando.fecha}
+          me={me} centro={centro} companies={misEmpresas}
+          onSaved={(msg) => { setEditando(null); onCambio(msg) }}
+          onClose={() => setEditando(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---------- Patrocinios: empresas candidatas a patrocinar al centro ----------
+// Tablas patrocinios y patrocinio_notas (migracion_patrocinios.sql). Solo las ven el equipo de
+// Patrocinios del centro (profiles.patrocinios, se da en Equipo), sus admins y los admins generales.
+// Cada patrocinio firmado suma baremo.patrocinio puntos en el ranking a quien lo consigue.
+const ESTADOS_PAT = [
+  { id: 'por_contactar', label: 'Por contactar', color: 'bg-slate-100 text-slate-600 border-slate-200', dot: 'bg-slate-400' },
+  { id: 'contactada', label: 'Contactada', color: 'bg-yellow-50 text-yellow-700 border-yellow-200', dot: 'bg-yellow-400' },
+  { id: 'interesada', label: 'Interesada', color: 'bg-orange-50 text-orange-700 border-orange-200', dot: 'bg-orange-500' },
+  { id: 'negociando', label: 'En negociación', color: 'bg-blue-50 text-blue-700 border-blue-200', dot: 'bg-blue-500' },
+  { id: 'firmado', label: 'Firmado', color: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500' },
+  { id: 'mas_adelante', label: 'Para más adelante', color: 'bg-fuchsia-50 text-fuchsia-700 border-fuchsia-200', dot: 'bg-fuchsia-500' },
+  { id: 'rechazado', label: 'No quieren', color: 'bg-rose-50 text-rose-700 border-rose-200', dot: 'bg-rose-500' },
+]
+const estadoPat = (id) => ESTADOS_PAT.find((e) => e.id === id) || ESTADOS_PAT[0]
+const GRUPOS_PAT = [
+  { id: 'marcha', label: 'En marcha', estados: ['por_contactar', 'contactada', 'interesada', 'negociando'] },
+  { id: 'firmados', label: 'Firmados', estados: ['firmado'] },
+  { id: 'cerradas', label: 'Cerradas', estados: ['mas_adelante', 'rechazado'] },
+  { id: 'anteriores', label: 'Ya nos patrocinaron', anteriores: true },
+  { id: 'todas', label: 'Todas' },
+]
+const enGrupoPat = (g, p) => g.anteriores ? p.ya_patrocino : (!g.estados || g.estados.includes(p.estado))
+const TIPOS_PAT = [['economico', 'Económico'], ['especie', 'En especie'], ['mixto', 'Mixto']]
+const euros = (n) => (n == null || n === '' ? '' : Number(n).toLocaleString('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }))
+const errorPat = (e) => faltaTabla(e?.message) ? 'Falta ejecutar migracion_patrocinios.sql en Supabase.'
+  : e?.code === '23505' ? 'Esa empresa del CRM ya está en Patrocinios.'
+  : /row-level security/i.test(e?.message || '') ? 'No tienes permiso: hace falta estar en el equipo de Patrocinios.' : e?.message
+const PAT_VACIO = {
+  nombre: '', sector: '', contacto: '', email: '', telefono: '', web: '', estado: 'por_contactar', responsable: '',
+  tipo: '', importe: '', contrapartidas: '', ya_patrocino: false, antecedentes: '', fecha_firma: '', conseguido_por: '', proximo_contacto: '',
+}
+
+// Patrocinios firmados de un centro, para los puntos: [{ usuario_id, nombre, fecha, id }].
+// Lo puede leer todo el centro (solo eso, no el resto de datos). Sin la migración, devuelve [].
+async function traerPatrocinios(centro) {
+  if (!centro) return []
+  const { data, error } = await supabase.rpc('patrocinios_firmados', { p_centro: centro })
+  return error ? [] : (data || [])
+}
+
+function FichaPatrocinio({ pat, centro, me, users, companies, puntos, puedeBorrar, onSaved, onClose, onAbrirEmpresa }) {
+  const [f, setF] = useState(() => pat
+    ? { ...PAT_VACIO, ...Object.fromEntries(Object.entries(pat).map(([k, v]) => [k, v ?? PAT_VACIO[k] ?? ''])) }
+    : { ...PAT_VACIO, responsable: me.id })
+  const [empresa, setEmpresa] = useState(() => {
+    if (!pat?.empresa_id) return null
+    const c = companies.find((x) => x.id === pat.empresa_id)
+    return { id: pat.empresa_id, nombre: c?.nombre || pat.nombre }
+  })
+  const [notas, setNotas] = useState(pat ? null : [])
+  const [nota, setNota] = useState('')
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }))
+
+  useEffect(() => {
+    if (!pat) return
+    supabase.from('patrocinio_notas').select('*').eq('patrocinio_id', pat.id).order('creado', { ascending: false })
+      .then(({ data }) => setNotas(data || []))
+  }, [pat])
+
+  // Al enlazar una empresa del CRM se copian sus datos de contacto (sin pisar lo ya escrito)
+  const enlazar = (e) => {
+    setEmpresa(e)
+    const c = e && companies.find((x) => x.id === e.id)
+    if (c) setF((p) => ({
+      ...p, nombre: p.nombre || c.nombre, sector: p.sector || c.sector || '', contacto: p.contacto || c.contacto || '',
+      email: p.email || c.email || '', telefono: p.telefono || c.telefono || '',
+    }))
+  }
+  const enCrm = empresa && companies.find((x) => x.id === empresa.id)
+  const equipo = users.filter((u) => u.patrocinios || esAdminRol(u.rol) || u.id === f.responsable || u.id === f.conseguido_por)
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre || 'Alguien'
+  const ganador = f.conseguido_por || f.responsable || me.id
+
+  const guardar = async () => {
+    if (!f.nombre.trim()) { setErr('Falta el nombre de la empresa.'); return }
+    const datos = {
+      nombre: f.nombre.trim().slice(0, 160), sector: f.sector.trim() || null, contacto: f.contacto.trim() || null,
+      email: f.email.trim() || null, telefono: f.telefono.trim() || null, web: f.web.trim() || null,
+      estado: f.estado, responsable: f.responsable || null, tipo: f.tipo || null,
+      importe: f.importe === '' ? null : Math.max(0, Number(String(f.importe).replace(',', '.')) || 0),
+      contrapartidas: f.contrapartidas.trim() || null, ya_patrocino: !!f.ya_patrocino, antecedentes: f.antecedentes.trim() || null,
+      proximo_contacto: f.proximo_contacto || null, empresa_id: empresa?.id || null, actualizado_por: me.nombre,
+      fecha_firma: f.estado === 'firmado' ? (f.fecha_firma || hoyLocal()) : (f.fecha_firma || null),
+      conseguido_por: f.estado === 'firmado' ? ganador : (f.conseguido_por || null),
+    }
+    setBusy(true); setErr('')
+    const res = pat
+      ? await supabase.from('patrocinios').update(datos).eq('id', pat.id).select('id').single()
+      : await supabase.from('patrocinios').insert({ ...datos, centro, creado_por: me.id }).select('id').single()
+    if (res.error) { setBusy(false); setErr(errorPat(res.error)); return }
+    // El cambio de estado (y lo que se haya escrito) queda en el seguimiento
+    const cambio = !pat || pat.estado !== f.estado
+    const texto = nota.trim() || (cambio ? (pat ? `Pasa a «${estadoPat(f.estado).label}»` : 'Añadida a Patrocinios') : '')
+    if (texto) {
+      await supabase.from('patrocinio_notas').insert({
+        patrocinio_id: pat ? pat.id : res.data.id, usuario_id: me.id, usuario_nombre: me.nombre, texto: texto.slice(0, 2000), estado_nuevo: cambio ? f.estado : null,
+      })
+    }
+    setBusy(false)
+    onSaved(f.estado === 'firmado' && pat?.estado !== 'firmado'
+      ? `¡Patrocinio firmado! +${puntos} puntos para ${nombre(ganador)} ✓`
+      : pat ? 'Guardado ✓' : 'Empresa añadida a Patrocinios ✓')
+  }
+  const soloNota = async () => {
+    if (!nota.trim()) return
+    setBusy(true); setErr('')
+    const { error } = await supabase.from('patrocinio_notas').insert({ patrocinio_id: pat.id, usuario_id: me.id, usuario_nombre: me.nombre, texto: nota.trim().slice(0, 2000) })
+    if (!error) await supabase.from('patrocinios').update({ actualizado_por: me.nombre }).eq('id', pat.id)
+    setBusy(false)
+    if (error) { setErr(errorPat(error)); return }
+    setNota('')
+    const { data } = await supabase.from('patrocinio_notas').select('*').eq('patrocinio_id', pat.id).order('creado', { ascending: false })
+    setNotas(data || [])
+  }
+  const borrar = async () => {
+    if (!confirm(`¿Borrar ${pat.nombre} de Patrocinios? Se borra también su seguimiento. Si solo ha dicho que no, mejor márcala como «No quieren».`)) return
+    setBusy(true)
+    const { error } = await supabase.from('patrocinios').delete().eq('id', pat.id)
+    setBusy(false)
+    if (error) { setErr(errorPat(error)); return }
+    onSaved('Borrada de Patrocinios')
+  }
+
+  const campo = (k, label, props = {}) => (
+    <div className={props.full ? 'sm:col-span-2' : ''}>
+      <Label>{label}</Label>
+      <Input value={f[k]} onChange={set(k)} type={props.type || 'text'} placeholder={props.placeholder} inputMode={props.inputMode} />
+    </div>
+  )
+  const sel = 'w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white'
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto bg-white rounded-2xl shadow-xl p-6 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-bold text-slate-900 flex items-center gap-2 min-w-0">
+            <Handshake className="w-4 h-4 text-slate-400 shrink-0" /><span className="truncate">{pat ? pat.nombre : 'Nueva empresa para patrocinio'}</span>
+          </h2>
+          <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100"><X className="w-4 h-4" /></button>
+        </div>
+
+        <div>
+          <Label>Empresa del CRM (opcional)</Label>
+          <BuscadorEmpresa companies={companies} valor={empresa} onCambiar={enlazar} placeholder="Buscar en las empresas del CRM…" />
+          {enCrm && (
+            <p className="mt-1.5 text-xs text-slate-500 flex flex-wrap items-center gap-1.5">
+              En el CRM de prácticas: <Badge estadoId={enCrm.estado} />
+              {enCrm.responsable ? <>llevada por {nombre(enCrm.responsable)}</> : <>sin asignar</>}
+              {enCrm.historica && <span className="text-amber-700 font-medium">· histórica ({aniosPracticas(enCrm.practicas)})</span>}
+              <button onClick={() => onAbrirEmpresa(enCrm)} className="underline text-slate-600 hover:text-slate-900">ver ficha</button>
+            </p>
+          )}
+          {!empresa && <p className="mt-1 text-xs text-slate-400">Si ya la tenemos en el CRM, enlázala: se copian sus datos y se ve si ya la hemos contactado para prácticas.</p>}
+        </div>
+
+        <div className="grid sm:grid-cols-2 gap-3">
+          {campo('nombre', 'Empresa', { full: true })}
+          {campo('sector', 'Sector')}
+          {campo('web', 'Web', { placeholder: 'empresa.com' })}
+          {campo('contacto', 'Persona de contacto')}
+          {campo('telefono', 'Teléfono', { inputMode: 'tel' })}
+          {campo('email', 'Email', { type: 'email', full: true })}
+          <div>
+            <Label>Estado</Label>
+            <select value={f.estado} onChange={set('estado')} className={sel}>
+              {ESTADOS_PAT.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label>Responsable</Label>
+            <select value={f.responsable} onChange={set('responsable')} className={sel}>
+              <option value="">Nadie todavía</option>
+              {equipo.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+            </select>
+          </div>
+          <div>
+            <Label>Tipo de patrocinio</Label>
+            <select value={f.tipo} onChange={set('tipo')} className={sel}>
+              <option value="">Sin decidir</option>
+              {TIPOS_PAT.map(([id, l]) => <option key={id} value={id}>{l}</option>)}
+            </select>
+          </div>
+          {campo('importe', 'Importe (€)', { inputMode: 'decimal', placeholder: 'p. ej. 500' })}
+          {campo('proximo_contacto', 'Próximo contacto', { type: 'date' })}
+          <div className="sm:col-span-2">
+            <Label>Qué les ofrecemos</Label>
+            <textarea value={f.contrapartidas} onChange={set('contrapartidas')} rows={2} placeholder="Logo en carteles, stand en el foro, charla…"
+              className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+          </div>
+
+          {f.estado === 'firmado' && (
+            <div className="sm:col-span-2 grid sm:grid-cols-2 gap-3 rounded-xl border border-emerald-200 bg-emerald-50/60 p-3">
+              <div>
+                <Label>Fecha de firma</Label>
+                <Input type="date" value={f.fecha_firma || hoyLocal()} onChange={set('fecha_firma')} />
+              </div>
+              <div>
+                <Label>Lo ha conseguido</Label>
+                <select value={ganador} onChange={set('conseguido_por')} className={sel}>
+                  {users.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                </select>
+              </div>
+              <p className="sm:col-span-2 text-xs text-emerald-800">+{puntos} puntos en el ranking para {nombre(ganador)}, con fecha de la firma.</p>
+            </div>
+          )}
+
+          <div className="sm:col-span-2 rounded-xl border border-amber-200 bg-amber-50/50 p-3 space-y-2">
+            <label className="flex items-center gap-2 text-sm text-slate-800 font-medium">
+              <input type="checkbox" checked={!!f.ya_patrocino} onChange={set('ya_patrocino')} className="w-4 h-4 accent-amber-600" />
+              <Star className="w-4 h-4 text-amber-500" />Nos ha patrocinado algún año anterior
+            </label>
+            <textarea value={f.antecedentes} onChange={set('antecedentes')} rows={2}
+              placeholder="Contactos de otros años: quién la llevó, qué dijo, cuánto pusieron…"
+              className="w-full px-3 py-2 rounded-lg border border-amber-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-300/50" />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label>Seguimiento</Label>
+          <textarea value={nota} onChange={(e) => setNota(e.target.value)} rows={2}
+            placeholder={pat ? 'Qué ha pasado: llamada, correo, reunión…' : 'Primera nota (opcional)'}
+            className="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+          {pat && (
+            <button onClick={soloNota} disabled={busy || !nota.trim()}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+              <Plus className="w-3.5 h-3.5" />Añadir nota sin guardar cambios
+            </button>
+          )}
+          {notas === null ? <p className="text-xs text-slate-400">Cargando…</p> : notas.length > 0 && (
+            <ol className="space-y-2 border-l-2 border-slate-100 pl-3 mt-1">
+              {notas.map((n) => (
+                <li key={n.id} className="text-sm">
+                  <p className="text-xs text-slate-400">
+                    {fecha(n.creado)} · {n.usuario_nombre || 'Alguien'}
+                    {n.estado_nuevo && <span className={`ml-1.5 px-1.5 py-0.5 rounded border text-[11px] font-medium ${estadoPat(n.estado_nuevo).color}`}>{estadoPat(n.estado_nuevo).label}</span>}
+                  </p>
+                  <p className="text-slate-700 whitespace-pre-line">{n.texto}</p>
+                </li>
+              ))}
+            </ol>
+          )}
+        </div>
+
+        {pat?.actualizado && <p className="text-xs text-slate-400">Última actualización: {fecha(pat.actualizado)}{pat.actualizado_por ? ` · ${pat.actualizado_por}` : ''}</p>}
+        {err && <p className="text-sm text-rose-600">{err}</p>}
+        <div className="flex gap-2 justify-end">
+          {pat && puedeBorrar && <Btn variant="danger" onClick={borrar} disabled={busy} className="mr-auto"><Trash2 className="w-4 h-4" /></Btn>}
+          <Btn variant="ghost" onClick={onClose}>Cancelar</Btn>
+          <Btn onClick={guardar} disabled={busy}><Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}</Btn>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmpresa, onAviso }) {
+  const [lista, setLista] = useState(null)
+  const [err, setErr] = useState('')
+  const [grupo, setGrupo] = useState('marcha')
+  const [busca, setBusca] = useState('')
+  const [persona, setPersona] = useState('')
+  const [abierto, setAbierto] = useState(null) // null | 'nueva' | fila
+  const [recarga, setRecarga] = useState(0)
+
+  useEffect(() => {
+    let vivo = true
+    traerTodo(() => supabase.from('patrocinios').select('*').eq('centro', centro).order('nombre').order('id'))
+      .then((d) => { if (vivo) { setErr(''); setLista(d) } })
+      .catch((e) => { if (vivo) { setErr(errorPat(e)); setLista([]) } })
+    return () => { vivo = false }
+  }, [centro, recarga])
+
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre
+  const todas = lista || []
+  const firmados = todas.filter((p) => p.estado === 'firmado')
+  const recaudado = firmados.reduce((t, p) => t + (p.tipo !== 'especie' ? Number(p.importe) || 0 : 0), 0)
+  const enNegociacion = todas.filter((p) => ['interesada', 'negociando'].includes(p.estado)).length
+  const hoy = hoyLocal()
+  const g = GRUPOS_PAT.find((x) => x.id === grupo) || GRUPOS_PAT[0]
+  const q = busca.trim().toLowerCase()
+  const visibles = todas
+    .filter((p) => enGrupoPat(g, p))
+    .filter((p) => !persona || (persona === '__sin' ? !p.responsable : p.responsable === persona))
+    .filter((p) => !q || [p.nombre, p.sector, p.contacto, p.antecedentes, nombre(p.responsable)].some((v) => (v || '').toLowerCase().includes(q)))
+  // Las que toca contactar (próximo contacto hoy o atrasado) van primero
+  visibles.sort((a, b) => {
+    const ta = a.proximo_contacto && a.proximo_contacto <= hoy ? 0 : 1
+    const tb = b.proximo_contacto && b.proximo_contacto <= hoy ? 0 : 1
+    return ta - tb || a.nombre.localeCompare(b.nombre, 'es')
+  })
+  const enEquipo = users.filter((u) => u.patrocinios)
+
+  const tarjeta = (titulo, valor, sub, color) => (
+    <div className="bg-white rounded-2xl border border-slate-200/80 px-4 py-3">
+      <p className="text-xs text-slate-500">{titulo}</p>
+      <p className={`text-2xl font-bold tabular-nums ${color}`}>{valor}</p>
+      {sub && <p className="text-xs text-slate-400">{sub}</p>}
+    </div>
+  )
+  const pastilla = (activo) => `shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs border transition-colors ${
+    activo ? 'bg-[#0e2d4d] text-white border-[#0e2d4d] font-bold' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 font-medium'}`
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)] flex flex-wrap items-start gap-3">
+        <div className="flex-1 min-w-[14rem]">
+          <h2 className="text-lg font-bold flex items-center gap-2"><Handshake className="w-5 h-5 text-teal-300" />Patrocinios · {centro}</h2>
+          <p className="mt-1 text-sm text-white/75">
+            Empresas que pueden patrocinarnos y las que ya lo hicieron otros años. Solo lo ve el equipo de Patrocinios
+            {enEquipo.length > 0 && <> ({enEquipo.map((u) => u.nombre.split(' ')[0]).join(', ')})</>} y los admins.
+            Cada patrocinio firmado suma <strong className="text-white">+{puntos}</strong> puntos a quien lo consigue.
+          </p>
+        </div>
+        <button onClick={() => setAbierto('nueva')}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-white text-[#0e2d4d] text-sm font-semibold hover:bg-slate-100">
+          <Plus className="w-4 h-4" />Añadir empresa
+        </button>
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+
+      <div className="grid grid-cols-3 gap-2 sm:gap-3">
+        {tarjeta('Firmados', firmados.length, recaudado ? euros(recaudado) : null, 'text-emerald-700')}
+        {tarjeta('Negociando', enNegociacion, 'interesadas + en negociación', 'text-blue-700')}
+        {tarjeta('En la lista', todas.length, `${todas.filter((p) => p.ya_patrocino).length} ya patrocinaron`, 'text-slate-900')}
+      </div>
+
+      <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+        {GRUPOS_PAT.map((x) => (
+          <button key={x.id} onClick={() => setGrupo(x.id)} className={pastilla(grupo === x.id)}>
+            {x.anteriores && <Star className="w-3 h-3 inline -mt-0.5 mr-1" />}{x.label} · {todas.filter((p) => enGrupoPat(x, p)).length}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <div className="relative flex-1 min-w-[12rem]">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar empresa, sector, contacto…"
+            className="w-full pl-9 pr-3 py-2 rounded-full border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+        </div>
+        <select value={persona} onChange={(e) => setPersona(e.target.value)} className="px-3 py-2 rounded-full border border-slate-300 text-sm bg-white">
+          <option value="">Todo el equipo</option>
+          <option value={me.id}>Las mías</option>
+          <option value="__sin">Sin responsable</option>
+          {users.filter((u) => u.id !== me.id && (u.patrocinios || esAdminRol(u.rol))).map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+        </select>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] divide-y divide-slate-100">
+        {lista === null ? <p className="p-6 text-sm text-slate-400">Cargando…</p>
+          : visibles.length === 0 ? (
+            <p className="p-6 text-sm text-slate-400">
+              {todas.length === 0 ? 'Todavía no hay ninguna empresa. Empieza por las que ya nos patrocinaron o las que conocéis de otros años.' : 'Ninguna empresa con estos filtros.'}
+            </p>
+          ) : visibles.map((p) => {
+            const e = estadoPat(p.estado)
+            const toca = p.proximo_contacto && p.proximo_contacto <= hoy && !['firmado', 'rechazado'].includes(p.estado)
+            return (
+              <button key={p.id} onClick={() => setAbierto(p)} className="w-full text-left px-4 sm:px-5 py-3.5 hover:bg-slate-50 flex items-start gap-3">
+                <span className={`w-2.5 h-2.5 mt-1.5 rounded-full shrink-0 ${e.dot}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                    {p.nombre}
+                    {p.ya_patrocino && <span title="Nos ha patrocinado algún año anterior" className="inline-flex items-center gap-0.5 text-[11px] font-medium text-amber-700"><Star className="w-3 h-3 fill-amber-400 text-amber-500" />Ya patrocinó</span>}
+                    {p.empresa_id && <Building2 title="Enlazada con una empresa del CRM" className="w-3.5 h-3.5 text-slate-300" />}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5 flex flex-wrap gap-x-1.5">
+                    <span>{p.responsable ? nombre(p.responsable) || 'Alguien' : 'Sin responsable'}</span>
+                    {p.sector && <span>· {p.sector}</span>}
+                    {p.importe != null && <span className="text-slate-700 font-medium">· {euros(p.importe)}{p.tipo === 'especie' ? ' en especie' : ''}</span>}
+                    {toca && <span className="text-rose-600 font-semibold">· toca contactar{p.proximo_contacto < hoy ? ` (desde el ${fechaCorta(p.proximo_contacto)})` : ' hoy'}</span>}
+                  </p>
+                  {p.antecedentes && <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{p.antecedentes}</p>}
+                </div>
+                <span className={`shrink-0 whitespace-nowrap text-xs font-medium px-2 py-0.5 rounded border ${e.color}`}>{e.label}</span>
+              </button>
+            )
+          })}
+      </div>
+
+      {abierto && (
+        <FichaPatrocinio
+          pat={abierto === 'nueva' ? null : abierto}
+          centro={centro} me={me} users={users} companies={companies} puntos={puntos} puedeBorrar={isAdmin}
+          onSaved={(m) => { setAbierto(null); setRecarga((r) => r + 1); onAviso(m) }}
+          onClose={() => setAbierto(null)}
+          onAbrirEmpresa={(c) => { setAbierto(null); onAbrirEmpresa(c) }}
+        />
+      )}
+    </div>
+  )
+}
+
 // ---------- Plantilla de correo del centro (admin de centro o admin general) ----------
 function PlantillaCorreo({ centro, centros, me, onChanged }) {
   const pl = plantillaDe(centros, centro)
@@ -2089,16 +2972,16 @@ function PlantillaCorreo({ centro, centros, me, onChanged }) {
 
 // ---------- Sistema de puntos del centro (admin de centro o admin general) ----------
 function BaremoPuntos({ centro, baremo, onChanged }) {
-  const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena, reunion: baremo.reunion })
+  const inicial = () => ({ estados: { ...baremo.estados }, quincena: baremo.quincena, reunion: baremo.reunion, patrocinio: baremo.patrocinio })
   const [f, setF] = useState(inicial)
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState('')
   const [err, setErr] = useState('')
-  const clave = JSON.stringify([centro, baremo.estados, baremo.quincena, baremo.reunion])
+  const clave = JSON.stringify([centro, baremo.estados, baremo.quincena, baremo.reunion, baremo.patrocinio])
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setF(inicial()); setMsg(''); setErr('') }, [clave])
   const num = (v) => Math.max(0, Math.min(100, parseInt(v, 10) || 0))
-  const cambiado = JSON.stringify([f.estados, f.quincena, f.reunion]) !== JSON.stringify([baremo.estados, baremo.quincena, baremo.reunion])
+  const cambiado = JSON.stringify([f.estados, f.quincena, f.reunion, f.patrocinio]) !== JSON.stringify([baremo.estados, baremo.quincena, baremo.reunion, baremo.patrocinio])
 
   const guardar = async (valor) => {
     setBusy(true); setErr(''); setMsg('')
@@ -2142,11 +3025,17 @@ function BaremoPuntos({ centro, baremo, onChanged }) {
             onChange={(ev) => setF((p) => ({ ...p, reunion: num(ev.target.value) }))}
             className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
         </label>
+        <label className="flex items-center justify-between gap-3 text-sm sm:col-span-2">
+          <span className="text-slate-700">Patrocinio firmado <span className="text-slate-400">(para quien lo consigue)</span></span>
+          <input type="number" min="0" max="500" value={f.patrocinio}
+            onChange={(ev) => setF((p) => ({ ...p, patrocinio: Math.max(0, Math.min(500, parseInt(ev.target.value, 10) || 0)) }))}
+            className="w-16 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums" />
+        </label>
       </div>
       {err && <p className="text-sm text-rose-600 mt-3">{err}</p>}
       {msg && <p className="text-sm text-emerald-700 mt-3">{msg}</p>}
       <div className="flex flex-wrap gap-2 mt-4">
-        <button onClick={() => guardar({ estados: f.estados, quincena: f.quincena, reunion: f.reunion })} disabled={busy || !cambiado}
+        <button onClick={() => guardar({ estados: f.estados, quincena: f.quincena, reunion: f.reunion, patrocinio: f.patrocinio })} disabled={busy || !cambiado}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#0e2d4d] text-white text-sm font-semibold disabled:opacity-40">
           <Save className="w-4 h-4" />{busy ? 'Guardando…' : 'Guardar'}
         </button>
@@ -2283,7 +3172,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
 
       <div className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
         {users.map((u) => (
-          <div key={u.id} className="flex items-center justify-between px-6 py-4 border-b border-slate-100 last:border-0">
+          <div key={u.id} className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-6 py-4 border-b border-slate-100 last:border-0">
             <div className="flex items-center gap-3">
               <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm font-bold ${u.rol === 'superadmin' ? 'bg-[#0e2d4d] text-white' : u.rol === 'admin' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-600'}`}>
                 {u.nombre[0]?.toUpperCase()}
@@ -2303,7 +3192,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 onClick={() => asignarLote(u)}
                 disabled={asignando === u.id || libres.length === 0}
@@ -2334,6 +3223,11 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
               title={u.secretaria ? 'Quitarle la secretaría (deja de poder crear reuniones y pasar lista)' : 'Hacerle secretaria/o: podrá crear reuniones y pasar lista'}
               className={`px-2 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1 ${u.secretaria ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
               <CalendarCheck className="w-3.5 h-3.5" />Secretaría
+            </button>
+            <button onClick={() => cambiarPerfil(u, { patrocinios: !u.patrocinios })}
+              title={u.patrocinios ? 'Sacarle del equipo de Patrocinios (deja de ver la pestaña Patrocinios)' : 'Meterle en el equipo de Patrocinios: verá y editará la pestaña Patrocinios'}
+              className={`px-2 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1 ${u.patrocinios ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
+              <Handshake className="w-3.5 h-3.5" />Patrocinios
             </button>
             {selCentro(u)}
             {u.id !== me.id && (isSuper || u.rol !== 'superadmin') && (
@@ -2437,7 +3331,7 @@ function MiQuincena({ me, companies, onAbrir, puntos = PUNTOS.quincena }) {
 // Sale del historial, así que cada entrada conserva la nota que se escribió EN ESE MOMENTO:
 // aunque la empresa cambie luego de estado o tenga notas nuevas, lo ya escrito no cambia.
 // Selector de empresa con búsqueda por nombre o CIF (hay cientos: un <select> sería inmanejable)
-function BuscadorEmpresa({ companies, valor, onCambiar }) {
+function BuscadorEmpresa({ companies, valor, onCambiar, placeholder = 'Todas las empresas' }) {
   const [texto, setTexto] = useState('')
   const [abierto, setAbierto] = useState(false)
   if (valor) {
@@ -2462,7 +3356,7 @@ function BuscadorEmpresa({ companies, valor, onCambiar }) {
       <input value={texto} onChange={(e) => { setTexto(e.target.value); setAbierto(true) }}
         onFocus={() => setAbierto(true)} onBlur={() => setTimeout(() => setAbierto(false), 150)}
         onKeyDown={(e) => { if (e.key === 'Enter' && sugerencias[0]) onCambiar({ id: sugerencias[0].id, nombre: sugerencias[0].nombre }) }}
-        placeholder="Todas las empresas"
+        placeholder={placeholder}
         className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
       {abierto && q && (
         <ul className="absolute z-20 mt-1 left-0 w-72 max-w-[80vw] bg-white border border-slate-200 rounded-xl shadow-lg py-1 text-xs">
@@ -3905,6 +4799,8 @@ export default function App() {
   const [centros, setCentros] = useState([])
   const [vista, setVista] = useState('') // '' = mi centro | id de otro centro (solo lectura) | BOTE
   const [centroSel, setCentroSel] = useState('') // admin general: centro que está gestionando
+  const [calVersion, setCalVersion] = useState(0) // sube al guardar un evento: recarga calendario y avisos
+  const [nAvisosCal, setNAvisosCal] = useState(0) // eventos que están avisando ahora (contador de la pestaña)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null))
@@ -4063,15 +4959,22 @@ export default function App() {
     visibles.sort((a, b) => (ultimoDe(a) || '').localeCompare(ultimoDe(b) || '') || a.nombre.localeCompare(b.nombre, 'es'))
   }
 
-  const pestanas = [['empresas', 'Empresas'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo'], ['estadisticas', 'Estadísticas']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
+  const pestanas = [['empresas', 'Empresas'], ['calendario', 'Calendario'], ...(isAdmin || me.patrocinios ? [['patrocinios', 'Patrocinios']] : []), ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo'], ['estadisticas', 'Estadísticas']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
     <button
       key={id}
       onClick={() => setTab(id)}
       className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${tab === id ? 'bg-white text-[#0e2d4d]' : 'text-white/80 hover:text-[#e2e8f0] hover:bg-white/[0.08]'}`}
     >
       {label}
+      {id === 'calendario' && nAvisosCal > 0 && (
+        <span className={`ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] px-1 rounded-full text-[10px] font-bold align-[1px] ${tab === id ? 'bg-[#0e2d4d] text-white' : 'bg-amber-400 text-[#0d2b45]'}`}>
+          {nAvisosCal}
+        </span>
+      )}
     </button>
   ))
+  // Con muchas pestañas (admins) no caben junto al logo: van siempre en su propia fila
+  const pocasPestanas = pestanas.length <= 5
 
   return (
     <div className="min-h-screen bg-[#f4f6fa]">
@@ -4082,12 +4985,12 @@ export default function App() {
             <div className="flex items-center gap-2.5 min-w-0">
               <LogoIaeste />
               <span className="text-sm text-white/60 font-medium border-l border-white/20 pl-2.5 truncate">
-                <span className="hidden sm:inline lg:hidden">Madrid · CRM</span>
-                {centros.length > 0 && <><span className="hidden sm:inline lg:hidden"> · </span><span className="text-white/90">{miCentro}</span></>}
+                <span className={`hidden sm:inline ${pocasPestanas ? 'lg:hidden' : ''}`}>Madrid · CRM</span>
+                {centros.length > 0 && <><span className={`hidden sm:inline ${pocasPestanas ? 'lg:hidden' : ''}`}> · </span><span className="text-white/90">{miCentro}</span></>}
               </span>
             </div>
             <div className="flex items-center gap-1.5 sm:gap-3 min-w-0">
-              <nav className="hidden lg:flex gap-1">{pestanas}</nav>
+              {pocasPestanas && <nav className="hidden lg:flex gap-1">{pestanas}</nav>}
               <div className="flex items-center gap-1 sm:gap-2 text-sm text-white/80 shrink-0">
                 <span className="hidden sm:flex items-center gap-1.5">
                   {isAdmin && <Shield className="w-3.5 h-3.5 text-white/70" />}
@@ -4114,12 +5017,22 @@ export default function App() {
               </div>
             </div>
           </div>
-          <nav className="lg:hidden flex gap-1 overflow-x-auto pb-2.5 -mx-4 px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">{pestanas}</nav>
+          <nav className={`${pocasPestanas ? 'lg:hidden' : ''} flex gap-1 overflow-x-auto pb-2.5 -mx-4 px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden`}>{pestanas}</nav>
         </div>
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
-        {tab === 'ranking' ? (
+        <AvisoCalendario me={me} centro={miCentro} version={calVersion} mostrar={tab !== 'calendario'}
+          onVer={() => setTab('calendario')} onContar={setNAvisosCal} />
+        {tab === 'calendario' ? (
+          <Calendario me={me} users={users} centro={miCentro} companies={companies}
+            misEmpresas={companies.filter((c) => c.centro === miCentro || c.responsable === me.id)}
+            version={calVersion} onCambio={(m) => { setCalVersion((v) => v + 1); if (m) flash(m) }} onAbrirEmpresa={setModal} />
+        ) : tab === 'patrocinios' && (isAdmin || me.patrocinios) ? (
+          <Patrocinios me={me} users={usersCentro} centro={miCentro} puntos={baremo.patrocinio} isAdmin={isAdmin}
+            companies={companies.filter((c) => !c.centro || c.centro === miCentro)}
+            onAbrirEmpresa={setModal} onAviso={(m) => flash(m, 4000)} />
+        ) : tab === 'ranking' ? (
           <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} centro={miCentro} />
         ) : tab === 'intercambios' ? (
           <Intercambios me={me} users={usersCentro} centro={miCentro} puedeGestionar={isAdmin} />
