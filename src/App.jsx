@@ -2527,7 +2527,227 @@ async function traerPatrocinios(centro) {
   return error ? [] : (data || [])
 }
 
-function FichaPatrocinio({ pat, centro, me, users, companies, puntos, puedeBorrar, onSaved, onClose, onAbrirEmpresa }) {
+// Resumen del contacto de búsqueda de prácticas de las empresas del centro (pat_contactos_empresas,
+// migracion_patrocinios_contactos.sql): Map(id de empresa en texto → { contactos, ultimo, ultimo_por, ultima_nota })
+async function traerContactosPat(centro) {
+  const { data, error } = await supabase.rpc('pat_contactos_empresas', { p_centro: centro })
+  if (error) return { mapa: new Map(), falta: /function|schema cache/i.test(error.message) }
+  return { mapa: new Map((data || []).map((r) => [String(r.empresa_id), r])), falta: false }
+}
+const textoContacto = (r) => !r
+  ? 'nunca contactada'
+  : `${r.contactos} contacto${r.contactos !== 1 ? 's' : ''} · el último ${haceCuanto(r.ultimo).replace('contactada ', '')}${r.ultimo_por ? ` (${r.ultimo_por})` : ''}`
+
+// Panel de la ficha de patrocinio: qué contacto se tuvo con la empresa al buscar prácticas.
+// De un vistazo el estado, quién la lleva y la última nota; el historial completo, solo si se pide.
+function ContactoPracticas({ emp, resumen, nombre, onAbrirEmpresa }) {
+  const [hist, setHist] = useState(null) // null = plegado
+  const [cargando, setCargando] = useState(false)
+  const ver = async () => {
+    if (hist) { setHist(null); return }
+    setCargando(true)
+    const { data } = await supabase.rpc('pat_historial_empresa', { p_empresa: String(emp.id) })
+    setCargando(false)
+    setHist(data || [])
+  }
+  // Un seguimiento con cambio de estado son dos filas (estado + nota) a la misma hora: se juntan
+  const entradas = []
+  for (const h of hist || []) {
+    const prev = entradas[entradas.length - 1]
+    const e = prev && prev.creado === h.creado && prev.usuario_nombre === h.usuario_nombre ? prev
+      : (entradas.push({ creado: h.creado, usuario_nombre: h.usuario_nombre, nota: '', a: null }), entradas[entradas.length - 1])
+    if (h.accion === 'nota') e.nota = h.detalle || ''
+    else e.a = h.estado_nuevo
+  }
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3 space-y-1.5">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Búsqueda de prácticas</p>
+      <p className="text-sm text-slate-700 flex flex-wrap items-center gap-1.5">
+        <Badge estadoId={emp.estado} />
+        <span>{emp.responsable ? `llevada por ${nombre(emp.responsable)}` : 'sin asignar'}</span>
+        {emp.historica && (
+          <span className="inline-flex items-center gap-0.5 text-xs font-medium text-amber-700">
+            <Star className="w-3 h-3 fill-amber-400 text-amber-500" />Histórica: {textoPracticas(emp.practicas)}
+          </span>
+        )}
+      </p>
+      <p className="text-xs text-slate-500">{textoContacto(resumen)}</p>
+      {resumen?.ultima_nota && <p className="text-sm text-slate-600 border-l-2 border-slate-300 pl-2">«{resumen.ultima_nota}»</p>}
+      <div className="flex flex-wrap gap-x-3 gap-y-1 pt-0.5">
+        {resumen && (
+          <button onClick={ver} className="text-xs font-medium text-slate-600 underline hover:text-slate-900">
+            {cargando ? 'Cargando…' : hist ? 'Ocultar historial' : `Ver todo el historial (${resumen.contactos})`}
+          </button>
+        )}
+        <button onClick={() => onAbrirEmpresa(emp)} className="text-xs font-medium text-slate-600 underline hover:text-slate-900">Abrir su ficha en Empresas</button>
+      </div>
+      {hist && (
+        <ol className="space-y-2 border-l-2 border-slate-200 pl-3 pt-1 max-h-64 overflow-y-auto">
+          {entradas.length === 0 && <li className="text-xs text-slate-400">No hay notas ni cambios de estado.</li>}
+          {entradas.map((e, i) => (
+            <li key={i} className="text-sm">
+              <p className="text-xs text-slate-400 flex flex-wrap items-center gap-1.5">
+                {fecha(e.creado)} · {e.usuario_nombre || 'Alguien'}{e.a && <Badge estadoId={e.a} />}
+              </p>
+              {e.nota && <p className="text-slate-700 whitespace-pre-line">{e.nota}</p>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+// Importar a Patrocinios, de golpe, empresas que ya están en Empresas (enlazadas a su ficha)
+const RELACION_PAT = ['interesados', 'beca', 'mas_adelante', 'segundo_plazo']
+function ImportarPatrocinios({ centro, me, users, companies, yaEstan, contactos, falta, onHecho, onClose }) {
+  const [filtro, setFiltro] = useState('relacion') // relacion | contactadas | todas
+  const [estado, setEstado] = useState('')
+  const [busca, setBusca] = useState('')
+  const [sel, setSel] = useState(() => new Set())
+  const [responsable, setResponsable] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+
+  const info = (c) => contactos.get(String(c.id))
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre || 'otra persona'
+  const ya = (c) => yaEstan.has(String(c.id))
+  const FILTROS = [
+    ['relacion', 'Con relación', (c) => c.historica || RELACION_PAT.includes(c.estado), 'Históricas, muy interesadas, con beca o para más adelante'],
+    ['contactadas', 'Contactadas', (c) => !!info(c), 'Con alguna nota o cambio de estado'],
+    ['todas', 'Todas', () => true, ''],
+  ]
+  const cumple = FILTROS.find(([id]) => id === filtro)[2]
+  const q = busca.trim().toLowerCase()
+  const lista = companies
+    .filter(cumple)
+    .filter((c) => !estado || c.estado === estado)
+    .filter((c) => !q || [c.nombre, c.sector, c.contacto].some((v) => (v || '').toLowerCase().includes(q)))
+    .sort((a, b) => (ya(a) - ya(b)) || (!!b.historica - !!a.historica)
+      || ((info(b)?.contactos || 0) - (info(a)?.contactos || 0)) || (a.nombre || '').localeCompare(b.nombre || '', 'es'))
+  const elegibles = lista.filter((c) => !ya(c))
+  const todasMarcadas = elegibles.length > 0 && elegibles.every((c) => sel.has(c.id))
+  const nSel = companies.filter((c) => sel.has(c.id) && !ya(c)).length
+  const marcar = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
+  const marcarVisibles = () => setSel((s) => {
+    const n = new Set(s)
+    for (const c of elegibles) { if (todasMarcadas) n.delete(c.id); else n.add(c.id) }
+    return n
+  })
+
+  const importar = async () => {
+    const elegidas = companies.filter((c) => sel.has(c.id) && !ya(c))
+    if (!elegidas.length) return
+    setBusy(true); setErr('')
+    let hechas = 0
+    for (let i = 0; i < elegidas.length; i += 100) {
+      const filas = elegidas.slice(i, i + 100).map((c) => ({
+        centro, nombre: (c.nombre || 'Sin nombre').slice(0, 160), sector: c.sector || null, contacto: c.contacto || null,
+        email: c.email || null, telefono: c.telefono || null, empresa_id: c.id, estado: 'por_contactar',
+        responsable: responsable || null, creado_por: me.id, actualizado_por: me.nombre,
+      }))
+      const { data, error } = await supabase.from('patrocinios').insert(filas).select('id')
+      if (error) {
+        setBusy(false)
+        setErr(`${hechas ? `Se han importado ${hechas}, pero al seguir: ` : ''}${errorPat(error)}`)
+        return
+      }
+      hechas += (data || []).length
+      if (data?.length) {
+        await supabase.from('patrocinio_notas').insert(data.map((d) => ({
+          patrocinio_id: d.id, usuario_id: me.id, usuario_nombre: me.nombre, texto: 'Importada desde Empresas', estado_nuevo: 'por_contactar',
+        })))
+      }
+    }
+    setBusy(false)
+    onHecho(`${hechas} empresa${hechas !== 1 ? 's' : ''} importada${hechas !== 1 ? 's' : ''} a Patrocinios ✓`)
+  }
+
+  const pastilla = (activo) => `shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-xs border transition-colors ${
+    activo ? 'bg-[#0e2d4d] text-white border-[#0e2d4d] font-bold' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300 font-medium'}`
+  return (
+    <div className="fixed inset-0 bg-slate-900/40 flex items-center justify-center p-2 sm:p-4 z-50" onClick={onClose}>
+      <div className="w-full max-w-2xl h-[92vh] sm:h-[88vh] flex flex-col bg-white rounded-2xl shadow-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="px-5 pt-5 pb-3 space-y-3 border-b border-slate-100">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-bold text-slate-900 flex items-center gap-2"><Building2 className="w-4 h-4 text-slate-400" />Importar desde Empresas</h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Marca las que quieras llevar a Patrocinios. Entran «Por contactar», con sus datos de contacto y enlazadas a su ficha,
+                así siempre se ve el contacto que tuvimos al buscar prácticas.
+              </p>
+            </div>
+            <button onClick={onClose} className="p-1 rounded-full text-slate-400 hover:bg-slate-100 shrink-0"><X className="w-4 h-4" /></button>
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
+            {FILTROS.map(([id, label, fn, title]) => (
+              <button key={id} onClick={() => setFiltro(id)} title={title} className={pastilla(filtro === id)}>
+                {label} · {companies.filter(fn).length}
+              </button>
+            ))}
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <div className="relative flex-1 min-w-[10rem]">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar empresa, sector…"
+                className="w-full pl-9 pr-3 py-1.5 rounded-full border border-slate-300 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
+            </div>
+            <select value={estado} onChange={(e) => setEstado(e.target.value)} className="px-3 py-1.5 rounded-full border border-slate-300 text-sm bg-white">
+              <option value="">Cualquier estado</option>
+              {ESTADOS.filter((e) => !e.oculto || companies.some((c) => c.estado === e.id)).map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+            </select>
+          </div>
+          {falta && <p className="text-xs text-amber-700">Falta ejecutar migracion_patrocinios_contactos.sql en Supabase: hasta entonces no se ve cuántas veces se ha contactado cada una.</p>}
+        </div>
+
+        <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+          {lista.length === 0 ? <p className="p-6 text-sm text-slate-400">Ninguna empresa con estos filtros.</p> : lista.map((c) => {
+            const yaEsta = ya(c)
+            const r = info(c)
+            return (
+              <label key={c.id} className={`flex items-start gap-3 px-5 py-2.5 ${yaEsta ? 'opacity-50' : 'cursor-pointer hover:bg-slate-50'}`}>
+                <input type="checkbox" disabled={yaEsta} checked={yaEsta || sel.has(c.id)} onChange={() => marcar(c.id)}
+                  className="mt-1 w-4 h-4 accent-[#0e2d4d] shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-slate-900 flex items-center gap-1.5 flex-wrap">
+                    {c.nombre}
+                    {c.historica && <span className="inline-flex items-center gap-0.5 text-[11px] font-medium text-amber-700"><Star className="w-3 h-3 fill-amber-400 text-amber-500" />Histórica {aniosPracticas(c.practicas)}</span>}
+                    {yaEsta && <span className="text-[11px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200">Ya en Patrocinios</span>}
+                  </p>
+                  <p className="text-xs text-slate-500 mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                    <Badge estadoId={c.estado} />
+                    <span>{textoContacto(r)}</span>
+                    <span className="text-slate-400">· {c.responsable ? nombre(c.responsable) : 'sin asignar'}</span>
+                  </p>
+                  {r?.ultima_nota && <p className="text-xs text-slate-400 mt-0.5 truncate">«{r.ultima_nota}»</p>}
+                </div>
+              </label>
+            )
+          })}
+        </div>
+
+        <div className="border-t border-slate-100 px-5 py-3 flex flex-wrap items-center gap-2 bg-white">
+          <button onClick={marcarVisibles} disabled={!elegibles.length}
+            className="px-3 py-1.5 rounded-full border border-slate-300 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+            {todasMarcadas ? 'Desmarcar las de la lista' : `Marcar las ${elegibles.length} de la lista`}
+          </button>
+          <select value={responsable} onChange={(e) => setResponsable(e.target.value)} title="A quién se le asignan en Patrocinios"
+            className="px-3 py-1.5 rounded-full border border-slate-300 text-xs bg-white">
+            <option value="">Sin responsable</option>
+            {users.filter((u) => u.patrocinios || esAdminRol(u.rol)).map((u) => <option key={u.id} value={u.id}>Para {u.nombre}</option>)}
+          </select>
+          <span className="flex-1" />
+          {err && <p className="w-full text-sm text-rose-600 order-last">{err}</p>}
+          <Btn onClick={importar} disabled={busy || !nSel}>
+            <Download className="w-4 h-4" />{busy ? 'Importando…' : `Importar ${nSel || ''}`}
+          </Btn>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function FichaPatrocinio({ pat, centro, me, users, companies, contactos = new Map(), puntos, puedeBorrar, onSaved, onClose, onAbrirEmpresa }) {
   const [f, setF] = useState(() => pat
     ? { ...PAT_VACIO, ...Object.fromEntries(Object.entries(pat).map(([k, v]) => [k, v ?? PAT_VACIO[k] ?? ''])) }
     : { ...PAT_VACIO, responsable: me.id })
@@ -2633,12 +2853,9 @@ function FichaPatrocinio({ pat, centro, me, users, companies, puntos, puedeBorra
           <Label>Empresa del CRM (opcional)</Label>
           <BuscadorEmpresa companies={companies} valor={empresa} onCambiar={enlazar} placeholder="Buscar en las empresas del CRM…" />
           {enCrm && (
-            <p className="mt-1.5 text-xs text-slate-500 flex flex-wrap items-center gap-1.5">
-              En el CRM de prácticas: <Badge estadoId={enCrm.estado} />
-              {enCrm.responsable ? <>llevada por {nombre(enCrm.responsable)}</> : <>sin asignar</>}
-              {enCrm.historica && <span className="text-amber-700 font-medium">· histórica ({aniosPracticas(enCrm.practicas)})</span>}
-              <button onClick={() => onAbrirEmpresa(enCrm)} className="underline text-slate-600 hover:text-slate-900">ver ficha</button>
-            </p>
+            <div className="mt-2">
+              <ContactoPracticas emp={enCrm} resumen={contactos.get(String(enCrm.id))} nombre={nombre} onAbrirEmpresa={onAbrirEmpresa} />
+            </div>
           )}
           {!empresa && <p className="mt-1 text-xs text-slate-400">Si ya la tenemos en el CRM, enlázala: se copian sus datos y se ve si ya la hemos contactado para prácticas.</p>}
         </div>
@@ -2751,6 +2968,9 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
   const [persona, setPersona] = useState('')
   const [abierto, setAbierto] = useState(null) // null | 'nueva' | fila
   const [recarga, setRecarga] = useState(0)
+  const [importando, setImportando] = useState(false)
+  const [cont, setCont] = useState({ mapa: new Map(), falta: false }) // contacto de búsqueda de prácticas
+  useEffect(() => { traerContactosPat(centro).then(setCont) }, [centro, recarga])
 
   useEffect(() => {
     let vivo = true
@@ -2779,6 +2999,8 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
     return ta - tb || a.nombre.localeCompare(b.nombre, 'es')
   })
   const enEquipo = users.filter((u) => u.patrocinios)
+  const yaEstan = new Set(todas.filter((p) => p.empresa_id != null).map((p) => String(p.empresa_id)))
+  const empresaDe = (p) => p.empresa_id != null && companies.find((c) => String(c.id) === String(p.empresa_id))
 
   const tarjeta = (titulo, valor, sub, color) => (
     <div className="bg-white rounded-2xl border border-slate-200/80 px-4 py-3">
@@ -2801,10 +3023,16 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
             Cada patrocinio firmado suma <strong className="text-white">+{puntos}</strong> puntos a quien lo consigue.
           </p>
         </div>
-        <button onClick={() => setAbierto('nueva')}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-white text-[#0e2d4d] text-sm font-semibold hover:bg-slate-100">
-          <Plus className="w-4 h-4" />Añadir empresa
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setImportando(true)}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full bg-white text-[#0e2d4d] text-sm font-semibold hover:bg-slate-100">
+            <Download className="w-4 h-4" />Importar de Empresas
+          </button>
+          <button onClick={() => setAbierto('nueva')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-full border border-white/40 text-white text-sm font-semibold hover:bg-white/[0.08]">
+            <Plus className="w-4 h-4" />Añadir una
+          </button>
+        </div>
       </div>
 
       {err && <p className="text-sm text-rose-600">{err}</p>}
@@ -2841,7 +3069,7 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
         {lista === null ? <p className="p-6 text-sm text-slate-400">Cargando…</p>
           : visibles.length === 0 ? (
             <p className="p-6 text-sm text-slate-400">
-              {todas.length === 0 ? 'Todavía no hay ninguna empresa. Empieza por las que ya nos patrocinaron o las que conocéis de otros años.' : 'Ninguna empresa con estos filtros.'}
+              {todas.length === 0 ? 'Todavía no hay ninguna empresa. Pulsa «Importar de Empresas» para traer de golpe las que ya conocemos (históricas, muy interesadas…), o añade a mano las que nos patrocinaron otros años.' : 'Ninguna empresa con estos filtros.'}
             </p>
           ) : visibles.map((p) => {
             const e = estadoPat(p.estado)
@@ -2861,6 +3089,13 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
                     {p.importe != null && <span className="text-slate-700 font-medium">· {euros(p.importe)}{p.tipo === 'especie' ? ' en especie' : ''}</span>}
                     {toca && <span className="text-rose-600 font-semibold">· toca contactar{p.proximo_contacto < hoy ? ` (desde el ${fechaCorta(p.proximo_contacto)})` : ' hoy'}</span>}
                   </p>
+                  {empresaDe(p) && (
+                    <p className="text-xs text-slate-500 mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1">
+                      <span className="text-slate-400">Prácticas:</span>
+                      <Badge estadoId={empresaDe(p).estado} />
+                      <span>{textoContacto(cont.mapa.get(String(p.empresa_id)))}</span>
+                    </p>
+                  )}
                   {p.antecedentes && <p className="text-xs text-slate-400 mt-0.5 line-clamp-1">{p.antecedentes}</p>}
                 </div>
                 <span className={`shrink-0 whitespace-nowrap text-xs font-medium px-2 py-0.5 rounded border ${e.color}`}>{e.label}</span>
@@ -2872,10 +3107,17 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
       {abierto && (
         <FichaPatrocinio
           pat={abierto === 'nueva' ? null : abierto}
-          centro={centro} me={me} users={users} companies={companies} puntos={puntos} puedeBorrar={isAdmin}
+          centro={centro} me={me} users={users} companies={companies} contactos={cont.mapa} puntos={puntos} puedeBorrar={isAdmin}
           onSaved={(m) => { setAbierto(null); setRecarga((r) => r + 1); onAviso(m) }}
           onClose={() => setAbierto(null)}
           onAbrirEmpresa={(c) => { setAbierto(null); onAbrirEmpresa(c) }}
+        />
+      )}
+      {importando && (
+        <ImportarPatrocinios
+          centro={centro} me={me} users={users} companies={companies} yaEstan={yaEstan} contactos={cont.mapa} falta={cont.falta}
+          onHecho={(m) => { setImportando(false); setRecarga((r) => r + 1); setGrupo('marcha'); onAviso(m) }}
+          onClose={() => { setImportando(false); setRecarga((r) => r + 1) }}
         />
       )}
     </div>
@@ -4998,6 +5240,7 @@ export default function App() {
   const [calVersion, setCalVersion] = useState(0) // sube al guardar un evento: recarga calendario y avisos
   const [nAvisosCal, setNAvisosCal] = useState(0) // eventos que están avisando ahora (contador de la pestaña)
   const [subComite, setSubComite] = useState('calendario') // apartado de la pestaña Comité
+  const [verPorPersona, setVerPorPersona] = useState(false) // admin: seguimiento pendiente desglosado por persona
   const [miembrosGrupos, setMiembrosGrupos] = useState([]) // filas de grupos_miembros (las de mi centro; un admin general, todas)
 
   useEffect(() => {
@@ -5132,6 +5375,18 @@ export default function App() {
   const sinMover = (c) => !!movidas && !!c.responsable && SIN_MOVER.estados.includes(c.estado) &&
     !(c.proximo_contacto && c.proximo_contacto > hoy) && !movidas.has(c.id) && (isAdmin ? c.centro === miCentro : c.responsable === me.id)
   const nSinMover = deAgenda.filter(sinMover).length
+  // Admin: lo mismo que los avisos de arriba, pero por persona, para ver quién va más atrasado
+  const pendientesPorPersona = isAdmin ? usersCentro.map((u) => {
+    const suyas = deAgenda.filter((c) => c.responsable === u.id)
+    return {
+      u,
+      seg: suyas.filter(sinMover).length,
+      hoy: suyas.filter((c) => c.proximo_contacto && c.proximo_contacto <= hoy).length,
+      atr: suyas.filter((c) => c.proximo_contacto && c.proximo_contacto < hoy).length,
+      activas: suyas.filter((c) => SIN_MOVER.estados.includes(c.estado)).length,
+    }
+  }).filter((r) => r.seg + r.hoy > 0).sort((a, b) => (b.seg + b.atr) - (a.seg + a.atr) || b.hoy - a.hoy || a.u.nombre.localeCompare(b.u.nombre, 'es')) : []
+  const verPendientes = (uid, a) => { setFiltroPersona(uid); setAgenda(a); setSelec([]) }
 
   // Los miembros ven Disponibles / Seguimiento / Cerradas (solo las suyas) y Todas (todas, en solo lectura)
   const gruposVisibles = GRUPOS.filter((g) => isAdmin || !g.soloAdmin)
@@ -5356,11 +5611,70 @@ export default function App() {
                     Atrasadas · {nAtrasadas}
                   </button>
                 )}
-                {agenda && (
-                  <button onClick={() => setAgenda('')} className="px-3 py-1.5 rounded-full text-xs font-medium text-slate-500 hover:bg-slate-100">
+                {isAdmin && pendientesPorPersona.length > 0 && (
+                  <button onClick={() => setVerPorPersona(!verPorPersona)}
+                    title="Quién tiene más empresas pendientes de seguimiento"
+                    className={`px-3 py-1.5 rounded-full text-xs font-semibold border inline-flex items-center gap-1.5 ${
+                      verPorPersona ? 'bg-[#0e2d4d] text-white border-[#0e2d4d]' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}>
+                    <Users className="w-3.5 h-3.5" />Por persona
+                  </button>
+                )}
+                {(agenda || (verPorPersona && filtroPersona)) && (
+                  <button onClick={() => { setAgenda(''); if (verPorPersona) setFiltroPersona('') }} className="px-3 py-1.5 rounded-full text-xs font-medium text-slate-500 hover:bg-slate-100">
                     Ver todas
                   </button>
                 )}
+              </div>
+            )}
+
+            {agendaVisible && isAdmin && verPorPersona && pendientesPorPersona.length > 0 && (
+              <div className="mb-4 bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
+                <div className="px-4 sm:px-5 py-3 border-b border-slate-100 flex flex-wrap items-baseline justify-between gap-x-3">
+                  <p className="text-sm font-bold text-slate-900">Seguimiento pendiente por persona</p>
+                  <p className="text-xs text-slate-400">Pulsa un número para ver esas empresas</p>
+                </div>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-[11px] uppercase tracking-wide text-slate-400">
+                      <th className="text-left font-medium px-4 sm:px-5 py-2">Persona</th>
+                      <th className="font-medium px-1 py-2 text-orange-700" title={`En seguimiento sin nota ni cambio de estado en ${SIN_MOVER.dias} días`}>
+                        <span className="hidden sm:inline">Realizar seguimiento</span><span className="sm:hidden">Seguim.</span>
+                      </th>
+                      <th className="font-medium px-1 py-2 text-blue-700" title="Próximo contacto hoy o ya pasado">
+                        <span className="hidden sm:inline">Para hoy</span><span className="sm:hidden">Hoy</span>
+                      </th>
+                      <th className="font-medium px-1 sm:pr-5 py-2 text-rose-700" title="Próximo contacto ya pasado">
+                        <span className="hidden sm:inline">Atrasadas</span><span className="sm:hidden">Atras.</span>
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pendientesPorPersona.map(({ u, seg, hoy: nH, atr, activas }) => {
+                      const celda = (n, a, color, activo) => (
+                        <td className="px-1 py-1.5 text-center">
+                          {n > 0 ? (
+                            <button onClick={() => verPendientes(u.id, a)}
+                              className={`min-w-[2.25rem] px-2 py-0.5 rounded-full text-sm font-semibold tabular-nums border ${
+                                filtroPersona === u.id && agenda === a ? activo : color}`}>
+                              {n}
+                            </button>
+                          ) : <span className="text-slate-300 tabular-nums">0</span>}
+                        </td>
+                      )
+                      return (
+                        <tr key={u.id} className={`border-t border-slate-100 ${filtroPersona === u.id ? 'bg-blue-50/50' : ''}`}>
+                          <td className="px-4 sm:px-5 py-1.5">
+                            <span className="text-slate-800">{u.nombre}</span>
+                            <span className="block text-[11px] text-slate-400">{activas} en seguimiento</span>
+                          </td>
+                          {celda(seg, 'seguimiento', 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100', 'bg-orange-600 text-white border-orange-600')}
+                          {celda(nH, 'hoy', 'bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100', 'bg-blue-700 text-white border-blue-700')}
+                          {celda(atr, 'atrasadas', 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100', 'bg-rose-600 text-white border-rose-600')}
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
 
