@@ -5,7 +5,7 @@ import {
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
   History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
   Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock, BarChart3, Sparkles,
-  CalendarDays, ChevronLeft, ExternalLink, Handshake,
+  CalendarDays, ChevronLeft, ExternalLink, Handshake, PartyPopper, Megaphone, Users,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -1394,7 +1394,7 @@ function GraficaEmpresas({ users, companies }) {
 // llegó a ese estado (último cambio de estado del historial). Si no hay registro de cuándo,
 // solo cuenta en periodos que empiezan a inicio de curso o antes.
 // Además, las quincenas cerradas dentro del periodo suman PUNTOS.quincena si se cumplieron.
-function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO, asistencias = [], patrocinios = [] }) {
+function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_DEFECTO, asistencias = [], patrocinios = [], grupos = [] }) {
   const ini = new Date(desde + 'T00:00:00')
   const fin = new Date(diaMas(hasta, 1) + 'T00:00:00')
   const nombreDeUsuario = (id) => users.find((u) => u.id === id)?.nombre || '—'
@@ -1407,7 +1407,7 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
   }
 
   const resumen = {}
-  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, reuniones: 0, patrocinios: 0, puntos: 0, filas: [] })
+  const de = (id) => (resumen[id] ||= { id, nombre: nombreDeUsuario(id), contactadas: 0, cerradas: 0, becas: 0, quincenas: 0, reuniones: 0, patrocinios: 0, grupos: 0, puntos: 0, filas: [] })
 
   for (const c of companies) {
     const pts = baremo.estados[c.estado] ?? 0
@@ -1459,6 +1459,15 @@ function calcularPuntos({ todo, companies, users, desde, hasta, baremo = PUNTOS_
     r.filas.push({ id: `p-${p.id}`, tipo: 'patrocinio', empresa_nombre: p.nombre, creado: p.fecha + 'T12:00:00', puntos: baremo.patrocinio })
   }
 
+  // Rúbrica de Grupos de Trabajo: cuenta el día en que el admin la valora
+  for (const g of grupos) {
+    if (!g.puntos || !g.valorado || g.valorado < desde || g.valorado > hasta) continue
+    const r = de(g.usuario_id)
+    r.grupos += g.puntos
+    r.puntos += g.puntos
+    r.filas.push({ id: `g-${g.id}`, tipo: 'grupo', empresa_nombre: `Grupo de ${grupoTrabajo(g.grupo).label}`, creado: g.valorado + 'T12:00:00', puntos: g.puntos, detalle: `rúbrica, sobre ${RUBRICA_MAX}` })
+  }
+
   users.forEach((u) => de(u.id))
   for (const r of Object.values(resumen)) r.filas.sort((a, b) => new Date(b.creado || 0) - new Date(a.creado || 0))
   // Solo la gente que se ha pasado en «users» (la del centro): cada centro tiene sus propios puntos
@@ -1481,6 +1490,8 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
   useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro, recarga])
   const [patrocinios, setPatrocinios] = useState([])
   useEffect(() => { traerPatrocinios(centro).then(setPatrocinios) }, [centro, recarga])
+  const [grupos, setGrupos] = useState([])
+  useEffect(() => { traerGrupos(centro).then(setGrupos) }, [centro, recarga])
 
   useEffect(() => {
     setTodo(null); setErr('')
@@ -1539,11 +1550,11 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
     }
   }
 
-  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo, asistencias, patrocinios })
+  const { lista } = calcularPuntos({ todo: todo || [], companies, users, desde, hasta, baremo, asistencias, patrocinios, grupos })
 
   const exportar = () => {
-    const cab = ['Persona', 'Empresas contactadas', 'Empresas cerradas', 'Becas', 'Quincenas cumplidas', 'Reuniones', 'Patrocinios', 'Puntos']
-    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.reuniones, d.patrocinios, d.puntos])]
+    const cab = ['Persona', 'Empresas contactadas', 'Empresas cerradas', 'Becas', 'Quincenas cumplidas', 'Reuniones', 'Patrocinios', 'Puntos grupos de trabajo', 'Puntos']
+    const csv = [cab, ...lista.map((d) => [d.nombre, d.contactadas, d.cerradas, d.becas, d.quincenas, d.reuniones, d.patrocinios, d.grupos, d.puntos])]
       .map((f) => f.map((v) => `"${String(v ?? '').replace(/"/g, '""')}"`).join(';'))
       .join('\n')
     const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' }))
@@ -1625,6 +1636,7 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                 <th className="font-medium pb-2" title="Quincenas de seguimiento cumplidas">Quinc.</th>
                 <th className="font-medium pb-2" title="Reuniones a las que ha ido">Reun.</th>
                 <th className="font-medium pb-2" title="Patrocinios firmados que ha conseguido">Patr.</th>
+                <th className="font-medium pb-2" title="Puntos de la rúbrica de Grupos de Trabajo">Grupos</th>
                 <th className="font-medium pb-2 pl-3">Puntos</th>
               </tr>
             </thead>
@@ -1645,11 +1657,12 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                     <td className={d.quincenas ? 'text-indigo-700 font-semibold' : 'text-slate-300'}>{d.quincenas}</td>
                     <td className={d.reuniones ? 'text-teal-700 font-semibold' : 'text-slate-300'}>{d.reuniones}</td>
                     <td className={d.patrocinios ? 'text-amber-700 font-semibold' : 'text-slate-300'}>{d.patrocinios}</td>
+                    <td className={d.grupos ? 'text-violet-700 font-semibold' : 'text-slate-300'}>{d.grupos}</td>
                     <td className="font-bold text-slate-900 pl-3">{d.puntos}</td>
                   </tr>
                   {abierto === d.id && (
                     <tr>
-                      <td colSpan={8} className="bg-slate-50 px-3 py-3">
+                      <td colSpan={9} className="bg-slate-50 px-3 py-3">
                         {d.filas.length === 0 ? (
                           <p className="text-xs text-slate-400">Sin puntos en este periodo.</p>
                         ) : (
@@ -1662,6 +1675,8 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
                                     ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-teal-50 text-teal-700 border-teal-200">Reunión</span>
                                   : h.tipo === 'patrocinio'
                                     ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-amber-50 text-amber-800 border-amber-300">Patrocinio</span>
+                                  : h.tipo === 'grupo'
+                                    ? <span className="shrink-0 px-1.5 py-0.5 rounded border font-medium bg-violet-50 text-violet-700 border-violet-200">Grupo</span>
                                     : <span className={`shrink-0 px-1.5 py-0.5 rounded border font-medium ${accionDe('quincena').color}`}>Quincena</span>}
                                 <span className="flex-1 min-w-0 text-slate-600 truncate">
                                   <strong className="text-slate-800">{h.empresa_nombre}</strong>{h.detalle ? ` · ${h.detalle}` : ''}
@@ -1693,6 +1708,7 @@ function Actividad({ users, companies, baremo = PUNTOS_DEFECTO, centro }) {
           : <> Este centro no da puntos por la quincena de seguimiento.</>}
         {' '}Cada reunión a la que se va suma sus puntos (por defecto {baremo.reunion}), el día de la reunión.
         {' '}Cada patrocinio firmado suma +{baremo.patrocinio} a quien lo consigue, el día de la firma.
+        {' '}La rúbrica de Grupos de Trabajo (hasta {RUBRICA_MAX}) cuenta el día en que se valora, en Comité → Grupos de trabajo.
         {' '}Se cambia en «Sistema de puntos», más abajo. Haz clic en una persona para ver el desglose.
       </p>
     </div>
@@ -1711,6 +1727,8 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
   useEffect(() => { traerAsistencias(centro).then(setAsistencias) }, [centro])
   const [patrocinios, setPatrocinios] = useState([])
   useEffect(() => { traerPatrocinios(centro).then(setPatrocinios) }, [centro])
+  const [grupos, setGrupos] = useState([])
+  useEffect(() => { traerGrupos(centro).then(setGrupos) }, [centro])
 
   useEffect(() => {
     setDatos(null); setErr('')
@@ -1728,7 +1746,7 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
   }, [hasta])
 
   const lista = datos
-    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo, asistencias, patrocinios })
+    ? calcularPuntos({ todo: datos.hist || [], companies: datos.empresas || [], users, desde, hasta, baremo, asistencias, patrocinios, grupos })
       .lista.filter((d) => users.some((u) => u.id === d.id))
     : []
   // Misma puntuación = mismo puesto
@@ -1785,7 +1803,7 @@ function Ranking({ users, me, centroNombre, baremo = PUNTOS_DEFECTO, centro }) {
         Cada empresa que llevas puntúa según su estado actual: {textoBaremo(baremo)}.
         {baremo.quincena > 0 && <> Quincena de seguimiento cumplida: +{baremo.quincena}.</>}
         {' '}Cada reunión a la que vas suma sus puntos (normalmente +{baremo.reunion}).
-        {' '}Patrocinio firmado: +{baremo.patrocinio}.
+        {' '}Patrocinio firmado: +{baremo.patrocinio}. Grupos de trabajo: hasta {RUBRICA_MAX} por la rúbrica.
       </p>
     </div>
   )
@@ -2778,7 +2796,7 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
         <div className="flex-1 min-w-[14rem]">
           <h2 className="text-lg font-bold flex items-center gap-2"><Handshake className="w-5 h-5 text-teal-300" />Patrocinios · {centro}</h2>
           <p className="mt-1 text-sm text-white/75">
-            Empresas que pueden patrocinarnos y las que ya lo hicieron otros años. Solo lo ve el equipo de Patrocinios
+            Empresas que pueden patrocinarnos y las que ya lo hicieron otros años. Solo lo ve el grupo de Patrocinios
             {enEquipo.length > 0 && <> ({enEquipo.map((u) => u.nombre.split(' ')[0]).join(', ')})</>} y los admins.
             Cada patrocinio firmado suma <strong className="text-white">+{puntos}</strong> puntos a quien lo consigue.
           </p>
@@ -2860,6 +2878,174 @@ function Patrocinios({ me, users, centro, companies, puntos, isAdmin, onAbrirEmp
           onAbrirEmpresa={(c) => { setAbierto(null); onAbrirEmpresa(c) }}
         />
       )}
+    </div>
+  )
+}
+
+// ---------- Grupos de trabajo: Eventos, Marketing y Patrocinios ----------
+// Tabla grupos_miembros (migracion_grupos.sql). Los admins apuntan a la gente y le ponen los puntos
+// de la rúbrica de Grupos de Trabajo (hasta RUBRICA_MAX según la dedicación), que cuentan en el
+// ranking el día en que se valoran. Estar en Patrocinios da acceso a la sección Patrocinios.
+const RUBRICA_MAX = 30
+const GRUPOS_TRABAJO = [
+  {
+    id: 'eventos', label: 'Eventos', Icono: PartyPopper, color: 'text-violet-600 bg-violet-50 border-violet-200',
+    titulo: 'Organiza los planes del centro',
+    texto: 'Logística y coordinación de cada evento: pádel, cenas, quedadas y cualquier actividad que una al grupo. Reparto de tareas, reservas y seguimiento para que todo salga bien.',
+  },
+  {
+    id: 'marketing', label: 'Marketing', Icono: Megaphone, color: 'text-sky-600 bg-sky-50 border-sky-200',
+    titulo: 'Promociona los eventos de IAESTE',
+    texto: 'Redes y LinkedIn: publicaciones, difusión y presencia online. Diseño y colocación de carteles por la universidad y material de captación.',
+  },
+  {
+    id: 'patrocinios', label: 'Patrocinios', Icono: Handshake, color: 'text-amber-700 bg-amber-50 border-amber-200',
+    titulo: 'Busca empresas patrocinadoras',
+    texto: 'Identifica y contacta empresas que puedan patrocinar al centro y acompáñalas hasta la firma. Este grupo ve y trabaja la sección Patrocinios.',
+  },
+]
+const grupoTrabajo = (id) => GRUPOS_TRABAJO.find((g) => g.id === id) || GRUPOS_TRABAJO[0]
+
+// Puntos de la rúbrica de un centro, para el ranking: [{ id, usuario_id, grupo, puntos, valorado }]
+async function traerGrupos(centro) {
+  if (!centro) return []
+  const { data, error } = await supabase.from('grupos_miembros').select('id, usuario_id, grupo, puntos, valorado').eq('centro', centro).gt('puntos', 0)
+  return error ? [] : (data || [])
+}
+
+function GruposTrabajo({ me, users, centro, miembros, isAdmin, puntosPatrocinio, onCambio }) {
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [anadir, setAnadir] = useState({})    // grupo → usuario elegido para apuntar
+  const [borrador, setBorrador] = useState({}) // id de fila → puntos escritos sin guardar
+
+  const hacer = async (fn, msg) => {
+    setBusy(true); setErr('')
+    const { error } = await fn()
+    setBusy(false)
+    if (error) { setErr(faltaTabla(error.message) ? 'Falta ejecutar migracion_grupos.sql en Supabase.' : error.code === '23505' ? 'Esa persona ya está en el grupo.' : error.message); return false }
+    onCambio(msg)
+    return true
+  }
+  const apuntar = (g) => {
+    const uid = anadir[g]; if (!uid) return
+    const u = users.find((x) => x.id === uid)
+    hacer(() => supabase.from('grupos_miembros').insert({ centro: u?.centro || centro, grupo: g, usuario_id: uid }), `${u?.nombre || 'Apuntado'} → ${grupoTrabajo(g).label} ✓`)
+    setAnadir((p) => ({ ...p, [g]: '' }))
+  }
+  const quitar = (m, nombre) => confirm(`¿Sacar a ${nombre} del grupo de ${grupoTrabajo(m.grupo).label}?${m.puntos ? ` Pierde sus ${m.puntos} puntos de la rúbrica.` : ''}${m.grupo === 'patrocinios' ? ' Dejará de ver la sección Patrocinios.' : ''}`)
+    && hacer(() => supabase.from('grupos_miembros').delete().eq('id', m.id), 'Quitado del grupo')
+  const guardarPuntos = async (m) => {
+    const v = Math.max(0, Math.min(RUBRICA_MAX, parseInt(borrador[m.id], 10) || 0))
+    if (await hacer(() => supabase.from('grupos_miembros').update({ puntos: v, valorado: hoyLocal() }).eq('id', m.id), 'Puntos guardados ✓')) {
+      setBorrador((p) => { const n = { ...p }; delete n[m.id]; return n })
+    }
+  }
+
+  const nombre = (id) => users.find((u) => u.id === id)?.nombre || 'Alguien'
+  const mios = miembros.filter((m) => m.usuario_id === me.id)
+
+  return (
+    <div className="max-w-3xl mx-auto space-y-4">
+      <div className="bg-[#0e2d4d] rounded-2xl p-5 text-white shadow-[0_4px_16px_rgba(13,43,69,0.18)]">
+        <h2 className="text-lg font-bold flex items-center gap-2"><Star className="w-5 h-5 text-teal-300" />Grupos de trabajo · {centro}</h2>
+        <p className="mt-1 text-sm text-white/75">
+          Cada grupo se valora con la rúbrica de Grupos de Trabajo: hasta <strong className="text-white">{RUBRICA_MAX} puntos</strong> según
+          la dedicación, que suman en el ranking. En Patrocinios, además, cada patrocinio firmado suma <strong className="text-white">+{puntosPatrocinio}</strong> a quien lo cierra.
+        </p>
+        {!isAdmin && (
+          <p className="mt-2 text-sm text-white/90">
+            {mios.length
+              ? <>Estás en {mios.map((m) => grupoTrabajo(m.grupo).label).join(' y ')}.</>
+              : <>Todavía no estás en ningún grupo. Si quieres entrar en uno, díselo a un admin.</>}
+          </p>
+        )}
+      </div>
+
+      {err && <p className="text-sm text-rose-600">{err}</p>}
+
+      {GRUPOS_TRABAJO.map((g) => {
+        const de = miembros.filter((m) => m.grupo === g.id && users.some((u) => u.id === m.usuario_id))
+          .sort((a, b) => nombre(a.usuario_id).localeCompare(nombre(b.usuario_id), 'es'))
+        const libres = users.filter((u) => !de.some((m) => m.usuario_id === u.id))
+        const estoy = de.some((m) => m.usuario_id === me.id)
+        return (
+          <div key={g.id} className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] overflow-hidden">
+            <div className="p-5 flex items-start gap-3">
+              <span className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${g.color}`}><g.Icono className="w-5 h-5" /></span>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-slate-900 flex items-center gap-2 flex-wrap">
+                  {g.label}
+                  <span className="text-xs font-medium text-slate-400">{de.length} persona{de.length !== 1 ? 's' : ''}</span>
+                  {estoy && <span className="text-[11px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">Estás aquí</span>}
+                </h3>
+                <p className="text-sm font-medium text-slate-700 mt-0.5">{g.titulo}</p>
+                <p className="text-sm text-slate-500 mt-0.5">{g.texto}</p>
+                <p className="text-xs text-slate-400 mt-1.5">
+                  Hasta {RUBRICA_MAX} puntos por la rúbrica{g.id === 'patrocinios' && <> · +{puntosPatrocinio} por cada patrocinio firmado</>}
+                </p>
+              </div>
+            </div>
+
+            {isAdmin ? (
+              <div className="border-t border-slate-100">
+                {de.length === 0 && <p className="px-5 py-3 text-sm text-slate-400">Nadie en este grupo todavía.</p>}
+                {de.map((m) => {
+                  const n = nombre(m.usuario_id)
+                  const editado = borrador[m.id] !== undefined
+                  return (
+                    <div key={m.id} className="px-5 py-2.5 flex items-center gap-3 border-b border-slate-100 last:border-0 flex-wrap">
+                      <span className="w-7 h-7 rounded-full bg-slate-100 text-slate-600 text-xs font-bold flex items-center justify-center shrink-0">{n[0]?.toUpperCase()}</span>
+                      <span className="flex-1 min-w-[8rem] text-sm text-slate-800">
+                        {n}{m.usuario_id === me.id && <span className="text-slate-400"> (tú)</span>}
+                        <span className="block text-xs text-slate-400">{m.valorado ? `Valorado el ${fechaCorta(m.valorado)}` : 'Sin valorar'}</span>
+                      </span>
+                      <label className="flex items-center gap-1.5 text-xs text-slate-500">
+                        Rúbrica
+                        <input type="number" min="0" max={RUBRICA_MAX} value={editado ? borrador[m.id] : m.puntos}
+                          onChange={(e) => setBorrador((p) => ({ ...p, [m.id]: e.target.value }))}
+                          onKeyDown={(e) => { if (e.key === 'Enter') guardarPuntos(m) }}
+                          className="w-14 px-2 py-1 rounded-lg border border-slate-300 text-sm text-right tabular-nums text-slate-900" />
+                        / {RUBRICA_MAX}
+                      </label>
+                      {editado && (
+                        <button onClick={() => guardarPuntos(m)} disabled={busy}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#0e2d4d] text-white text-xs font-semibold disabled:opacity-40">
+                          <Save className="w-3.5 h-3.5" />Guardar
+                        </button>
+                      )}
+                      <button onClick={() => quitar(m, n)} disabled={busy} title="Sacar del grupo"
+                        className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 disabled:opacity-40">
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )
+                })}
+                <div className="px-5 py-3 bg-slate-50/70 flex flex-wrap items-center gap-2">
+                  <select value={anadir[g.id] || ''} onChange={(e) => setAnadir((p) => ({ ...p, [g.id]: e.target.value }))}
+                    className="flex-1 min-w-[10rem] px-3 py-1.5 rounded-lg border border-slate-300 text-sm bg-white">
+                    <option value="">Apuntar a alguien…</option>
+                    {libres.map((u) => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                  </select>
+                  <button onClick={() => apuntar(g.id)} disabled={busy || !anadir[g.id]}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-full border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40">
+                    <UserPlus className="w-4 h-4" />Apuntar
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="border-t border-slate-100 px-5 py-3 flex flex-wrap gap-1.5">
+                {de.length === 0 ? <p className="text-sm text-slate-400">Nadie en este grupo todavía.</p> : de.map((m) => (
+                  <span key={m.id} className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs ${m.usuario_id === me.id ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold' : 'bg-slate-100 text-slate-700'}`}>
+                    {nombre(m.usuario_id)}
+                    {m.usuario_id === me.id && m.valorado && <span className="font-normal text-emerald-700">· {m.puntos}/{RUBRICA_MAX} pts</span>}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -3124,6 +3310,16 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
     else onChanged()
   }
   const cambiarRol = (u, rol) => cambiarPerfil(u, { rol })
+  // Patrocinios es un grupo de trabajo (migracion_grupos.sql); sin esa tabla, se usa la casilla del perfil
+  const cambiarGrupoPat = async (u) => {
+    setErr('')
+    const { error } = u.patrocinios
+      ? await supabase.from('grupos_miembros').delete().eq('grupo', 'patrocinios').eq('usuario_id', u.id)
+      : await supabase.from('grupos_miembros').insert({ centro: u.centro || 'TLMA', grupo: 'patrocinios', usuario_id: u.id })
+    if (error && faltaTabla(error.message)) return cambiarPerfil(u, { patrocinios: !u.patrocinios })
+    if (error) setErr(error.message)
+    else onChanged()
+  }
   // Borra la cuenta entera (perfil + email): podrá volver a registrarse con el mismo email.
   // Sus empresas vuelven a quedar sin asignar y su historial se conserva.
   const borrarUsuario = async (u) => {
@@ -3224,8 +3420,8 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
               className={`px-2 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1 ${u.secretaria ? 'border-teal-300 bg-teal-50 text-teal-800' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
               <CalendarCheck className="w-3.5 h-3.5" />Secretaría
             </button>
-            <button onClick={() => cambiarPerfil(u, { patrocinios: !u.patrocinios })}
-              title={u.patrocinios ? 'Sacarle del equipo de Patrocinios (deja de ver la pestaña Patrocinios)' : 'Meterle en el equipo de Patrocinios: verá y editará la pestaña Patrocinios'}
+            <button onClick={() => cambiarGrupoPat(u)}
+              title={u.patrocinios ? 'Sacarle del grupo de Patrocinios (deja de ver Comité → Patrocinios)' : 'Meterle en el grupo de Patrocinios: verá y editará Comité → Patrocinios'}
               className={`px-2 py-1.5 rounded-lg border text-xs font-medium inline-flex items-center gap-1 ${u.patrocinios ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-300 text-slate-500 hover:bg-slate-50'}`}>
               <Handshake className="w-3.5 h-3.5" />Patrocinios
             </button>
@@ -4801,6 +4997,8 @@ export default function App() {
   const [centroSel, setCentroSel] = useState('') // admin general: centro que está gestionando
   const [calVersion, setCalVersion] = useState(0) // sube al guardar un evento: recarga calendario y avisos
   const [nAvisosCal, setNAvisosCal] = useState(0) // eventos que están avisando ahora (contador de la pestaña)
+  const [subComite, setSubComite] = useState('calendario') // apartado de la pestaña Comité
+  const [miembrosGrupos, setMiembrosGrupos] = useState([]) // filas de grupos_miembros (las de mi centro; un admin general, todas)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session ?? null))
@@ -4817,14 +5015,22 @@ export default function App() {
     // Supabase devuelve como máximo 1000 filas por consulta: empresas y prácticas se piden por páginas
     // (si fallan, se quedan vacías como antes en vez de romper la carga)
     const todas = (consulta) => traerTodo(consulta).then((data) => ({ data }), () => ({ data: null }))
-    const [{ data: perfiles }, { data: emps }, { data: pracs }, { data: cents }] = await Promise.all([
+    const [{ data: perfilesBd }, { data: emps }, { data: pracs }, { data: cents }, { data: grupos, error: errGrupos }] = await Promise.all([
       supabase.from('profiles').select('*').order('nombre'),
       todas(() => supabase.from('empresas').select('*').order('nombre').order('id')),
       // Si la tabla practicas aún no existe, esto devuelve error y simplemente no hay históricas
       todas(() => supabase.from('practicas').select('*').order('anio').order('id')),
       // Si aún no se ha ejecutado migracion_multicentro.sql, no hay centros y todo funciona como antes
       supabase.from('centros').select('*').order('orden'),
+      // Si aún no se ha ejecutado migracion_grupos.sql, el acceso a Patrocinios sale de la casilla del perfil
+      supabase.from('grupos_miembros').select('*').order('id'),
     ])
+    const hayGrupos = !errGrupos
+    setMiembrosGrupos(grupos || [])
+    // «patrocinios» = está en el grupo de Patrocinios (es lo que usa el resto de la app)
+    const perfiles = (perfilesBd || []).map((p) => hayGrupos
+      ? { ...p, patrocinios: (grupos || []).some((g) => g.usuario_id === p.id && g.grupo === 'patrocinios') }
+      : p)
     setCentros(cents || [])
     const porEmpresa = {}
     for (const p of pracs || []) (porEmpresa[p.empresa_id] ||= []).push(p)
@@ -4959,14 +5165,14 @@ export default function App() {
     visibles.sort((a, b) => (ultimoDe(a) || '').localeCompare(ultimoDe(b) || '') || a.nombre.localeCompare(b.nombre, 'es'))
   }
 
-  const pestanas = [['empresas', 'Empresas'], ['calendario', 'Calendario'], ...(isAdmin || me.patrocinios ? [['patrocinios', 'Patrocinios']] : []), ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo'], ['estadisticas', 'Estadísticas']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
+  const pestanas = [['empresas', 'Empresas'], ['comite', 'Comité'], ...(isAdmin ? [['seguimiento', 'Seguimiento'], ['equipo', 'Equipo'], ['estadisticas', 'Estadísticas']] : []), ['intercambios', 'Intercambios'], ['reuniones', 'Reuniones'], ['ranking', 'Ranking']].map(([id, label]) => (
     <button
       key={id}
       onClick={() => setTab(id)}
       className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-full text-sm font-semibold transition-colors ${tab === id ? 'bg-white text-[#0e2d4d]' : 'text-white/80 hover:text-[#e2e8f0] hover:bg-white/[0.08]'}`}
     >
       {label}
-      {id === 'calendario' && nAvisosCal > 0 && (
+      {id === 'comite' && nAvisosCal > 0 && (
         <span className={`ml-1.5 inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] px-1 rounded-full text-[10px] font-bold align-[1px] ${tab === id ? 'bg-[#0e2d4d] text-white' : 'bg-amber-400 text-[#0d2b45]'}`}>
           {nAvisosCal}
         </span>
@@ -4975,6 +5181,10 @@ export default function App() {
   ))
   // Con muchas pestañas (admins) no caben junto al logo: van siempre en su propia fila
   const pocasPestanas = pestanas.length <= 5
+  // Pestaña Comité: Calendario, Grupos de trabajo y (para su grupo y los admins) Patrocinios
+  const subsComite = [['calendario', 'Calendario', CalendarDays], ['grupos', 'Grupos de trabajo', Users],
+    ...(isAdmin || me.patrocinios ? [['patrocinios', 'Patrocinios', Handshake]] : [])]
+  const subComiteEf = subsComite.some(([id]) => id === subComite) ? subComite : 'calendario'
 
   return (
     <div className="min-h-screen bg-[#f4f6fa]">
@@ -5022,16 +5232,35 @@ export default function App() {
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-6">
-        <AvisoCalendario me={me} centro={miCentro} version={calVersion} mostrar={tab !== 'calendario'}
-          onVer={() => setTab('calendario')} onContar={setNAvisosCal} />
-        {tab === 'calendario' ? (
-          <Calendario me={me} users={users} centro={miCentro} companies={companies}
-            misEmpresas={companies.filter((c) => c.centro === miCentro || c.responsable === me.id)}
-            version={calVersion} onCambio={(m) => { setCalVersion((v) => v + 1); if (m) flash(m) }} onAbrirEmpresa={setModal} />
-        ) : tab === 'patrocinios' && (isAdmin || me.patrocinios) ? (
-          <Patrocinios me={me} users={usersCentro} centro={miCentro} puntos={baremo.patrocinio} isAdmin={isAdmin}
-            companies={companies.filter((c) => !c.centro || c.centro === miCentro)}
-            onAbrirEmpresa={setModal} onAviso={(m) => flash(m, 4000)} />
+        <AvisoCalendario me={me} centro={miCentro} version={calVersion} mostrar={!(tab === 'comite' && subComiteEf === 'calendario')}
+          onVer={() => { setTab('comite'); setSubComite('calendario') }} onContar={setNAvisosCal} />
+        {tab === 'comite' ? (
+          <>
+            <div className="max-w-3xl mx-auto flex gap-1.5 overflow-x-auto bg-[#0e2d4d] rounded-xl p-1.5 mb-4 shadow-[0_4px_16px_rgba(13,43,69,0.18)]">
+              {subsComite.map(([id, label, Icono]) => (
+                <button key={id} onClick={() => setSubComite(id)}
+                  className={`flex-1 shrink-0 whitespace-nowrap inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-full text-sm transition-colors ${
+                    subComiteEf === id ? 'bg-white text-[#0e2d4d] font-bold shadow-sm' : 'text-white/85 font-medium hover:bg-white/[0.08]'}`}>
+                  <Icono className="w-4 h-4" />{label}
+                  {id === 'calendario' && nAvisosCal > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[1.125rem] h-[1.125rem] px-1 rounded-full text-[10px] font-bold bg-amber-400 text-[#0d2b45]">{nAvisosCal}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+            {subComiteEf === 'grupos' ? (
+              <GruposTrabajo me={me} users={usersCentro} centro={miCentro} isAdmin={isAdmin} puntosPatrocinio={baremo.patrocinio}
+                miembros={miembrosGrupos.filter((m) => m.centro === miCentro)} onCambio={(m) => { cargar(); if (m) flash(m) }} />
+            ) : subComiteEf === 'patrocinios' ? (
+              <Patrocinios me={me} users={usersCentro} centro={miCentro} puntos={baremo.patrocinio} isAdmin={isAdmin}
+                companies={companies.filter((c) => !c.centro || c.centro === miCentro)}
+                onAbrirEmpresa={setModal} onAviso={(m) => flash(m, 4000)} />
+            ) : (
+              <Calendario me={me} users={users} centro={miCentro} companies={companies}
+                misEmpresas={companies.filter((c) => c.centro === miCentro || c.responsable === me.id)}
+                version={calVersion} onCambio={(m) => { setCalVersion((v) => v + 1); if (m) flash(m) }} onAbrirEmpresa={setModal} />
+            )}
+          </>
         ) : tab === 'ranking' ? (
           <Ranking users={usersCentro} me={me} centroNombre={centros.length ? centroNombre(miCentro) : ''} baremo={baremo} centro={miCentro} />
         ) : tab === 'intercambios' ? (
