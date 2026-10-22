@@ -5,7 +5,7 @@ import {
   Shield, User, Save, Mail, Phone, AlertCircle, KeyRound, Download, CalendarClock, Send, FileSpreadsheet, Trophy,
   History, UserPlus, UserMinus, Inbox, MapPin, Star, AlertTriangle, CalendarCheck, Check, Lock, LockOpen,
   Lightbulb, PlaneTakeoff, PlaneLanding, ArrowUpDown, Clock, BarChart3, Sparkles,
-  CalendarDays, ChevronLeft, ExternalLink, Handshake, PartyPopper, Megaphone, Users,
+  CalendarDays, ChevronLeft, ExternalLink, Handshake, PartyPopper, Megaphone, Users, Moon,
 } from 'lucide-react'
 
 // ---------- Config ----------
@@ -255,6 +255,14 @@ const detalleLegible = (h) =>
     : h.detalle
 const fecha = (iso) =>
   iso ? new Date(iso).toLocaleString('es-ES', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : ''
+// Seguimientos registrados a partir de esta hora (hora de España): se pintan en morado para que destaquen
+const HORA_TARDE = 18
+const esTarde = (iso) => {
+  if (!iso) return false
+  const h = Number(new Date(iso).toLocaleString('en-GB', { hour: '2-digit', hour12: false, timeZone: 'Europe/Madrid' }))
+  return h >= HORA_TARDE
+}
+const TituloTarde = `Registrado a partir de las ${HORA_TARDE}:00`
 
 const HOY = () => new Date().toISOString().slice(0, 10)
 const sumarDias = (n) => { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
@@ -1237,7 +1245,7 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
             ) : (
               <ol className="space-y-2 max-h-72 overflow-y-auto pr-1">
                 {seguimientos.map((h) => (h.accion === 'estado' || h.accion === 'nota') ? (
-                  <li key={h.id} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+                  <li key={h.id} className={`rounded-lg border px-3 py-2 text-xs ${esTarde(h.creado) ? 'border-violet-300 bg-violet-50' : 'border-slate-200 bg-slate-50'}`}>
                     <div className="flex flex-wrap items-center gap-1.5 mb-1">
                       {h.accion === 'estado' && h.estado_nuevo ? (
                         <span className={`px-1.5 py-0.5 rounded border font-medium ${estadoDe(h.estado_nuevo).color}`}>
@@ -1246,7 +1254,9 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
                       ) : h.accion === 'estado' ? (
                         <span className="px-1.5 py-0.5 rounded border font-medium bg-emerald-50 text-emerald-700 border-emerald-200">{detalleLegible(h)}</span>
                       ) : null}
-                      <span className="text-slate-400">{h.usuario_nombre} · {fecha(h.creado)}</span>
+                      {esTarde(h.creado)
+                        ? <span className="inline-flex items-center gap-1 text-violet-700 font-semibold" title={TituloTarde}><Moon className="w-3 h-3" />{h.usuario_nombre} · {fecha(h.creado)}</span>
+                        : <span className="text-slate-400">{h.usuario_nombre} · {fecha(h.creado)}</span>}
                     </div>
                     {h.texto ? <p className="text-slate-700 whitespace-pre-wrap break-words">{h.texto}</p>
                       : <p className="text-slate-400 italic">Sin nota</p>}
@@ -2585,9 +2595,9 @@ function ContactoPracticas({ emp, resumen, nombre, onAbrirEmpresa }) {
         <ol className="space-y-2 border-l-2 border-slate-200 pl-3 pt-1 max-h-64 overflow-y-auto">
           {entradas.length === 0 && <li className="text-xs text-slate-400">No hay notas ni cambios de estado.</li>}
           {entradas.map((e, i) => (
-            <li key={i} className="text-sm">
-              <p className="text-xs text-slate-400 flex flex-wrap items-center gap-1.5">
-                {fecha(e.creado)} · {e.usuario_nombre || 'Alguien'}{e.a && <Badge estadoId={e.a} />}
+            <li key={i} className={`text-sm ${esTarde(e.creado) ? 'rounded-lg bg-violet-50 border border-violet-200 px-2 py-1' : ''}`}>
+              <p className={`text-xs flex flex-wrap items-center gap-1.5 ${esTarde(e.creado) ? 'text-violet-700 font-semibold' : 'text-slate-400'}`} title={esTarde(e.creado) ? TituloTarde : undefined}>
+                {esTarde(e.creado) && <Moon className="w-3 h-3" />}{fecha(e.creado)} · {e.usuario_nombre || 'Alguien'}{e.a && <Badge estadoId={e.a} />}
               </p>
               {e.nota && <p className="text-slate-700 whitespace-pre-line">{e.nota}</p>}
             </li>
@@ -2936,9 +2946,9 @@ function FichaPatrocinio({ pat, centro, me, users, companies, contactos = new Ma
           {notas === null ? <p className="text-xs text-slate-400">Cargando…</p> : notas.length > 0 && (
             <ol className="space-y-2 border-l-2 border-slate-100 pl-3 mt-1">
               {notas.map((n) => (
-                <li key={n.id} className="text-sm">
-                  <p className="text-xs text-slate-400">
-                    {fecha(n.creado)} · {n.usuario_nombre || 'Alguien'}
+                <li key={n.id} className={`text-sm ${esTarde(n.creado) ? 'rounded-lg bg-violet-50 border border-violet-200 px-2 py-1' : ''}`}>
+                  <p className={`text-xs ${esTarde(n.creado) ? 'text-violet-700 font-semibold' : 'text-slate-400'}`} title={esTarde(n.creado) ? TituloTarde : undefined}>
+                    {esTarde(n.creado) && <Moon className="w-3 h-3 inline -mt-0.5 mr-1" />}{fecha(n.creado)} · {n.usuario_nombre || 'Alguien'}
                     {n.estado_nuevo && <span className={`ml-1.5 px-1.5 py-0.5 rounded border text-[11px] font-medium ${estadoPat(n.estado_nuevo).color}`}>{estadoPat(n.estado_nuevo).label}</span>}
                   </p>
                   <p className="text-slate-700 whitespace-pre-line">{n.texto}</p>
@@ -3824,6 +3834,7 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
   const [persona, setPersona] = useState('')
   const [empresa, setEmpresa] = useState(null) // { id, nombre } | null
   const [tipo, setTipo] = useState('seguimientos') // 'seguimientos' (notas y estados) | 'todo'
+  const [soloTarde, setSoloTarde] = useState(false)  // solo los seguimientos de a partir de las 18:00
   const [busca, setBusca] = useState('')
   const [filas, setFilas] = useState(null)
   const [err, setErr] = useState('')
@@ -3841,6 +3852,7 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
       .catch((e) => { setErr(e.message); setFilas([]) })
   }, [dias, empresa?.id, version])
 
+  const esSeguimiento = (h) => h.accion === 'estado' || h.accion === 'nota'
   // Un cambio de estado y su nota se guardan como dos filas con la misma clave: se juntan en una
   const entradas = (() => {
     if (!filas) return []
@@ -3860,7 +3872,9 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
       .filter((h) => tipo === 'todo' || h.accion === 'estado' || h.accion === 'nota')
       .filter((h) => !persona || h.usuario_id === persona)
       .filter((h) => !q || (h.empresa_nombre || '').toLowerCase().includes(q) || (h.texto || '').toLowerCase().includes(q))
+      .filter((h) => !soloTarde || (esSeguimiento(h) && esTarde(h.creado)))
   })()
+  const nTarde = entradas.filter((h) => esSeguimiento(h) && esTarde(h.creado)).length
 
   // Agrupadas por día
   const porDia = []
@@ -3931,6 +3945,15 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
               className="w-full pl-8 pr-2.5 py-1.5 rounded-lg border border-slate-300 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30" />
           </div>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <span className="inline-flex items-center gap-1"><Moon className="w-3.5 h-3.5 text-violet-600" />En morado, los seguimientos registrados a partir de las {HORA_TARDE}:00.</span>
+          {(nTarde > 0 || soloTarde) && (
+            <button onClick={() => setSoloTarde(!soloTarde)}
+              className={`px-2.5 py-1 rounded-full border font-medium ${soloTarde ? 'bg-violet-600 text-white border-violet-600' : 'bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100'}`}>
+              {soloTarde ? 'Ver todos' : `Ver solo esos · ${nTarde}`}
+            </button>
+          )}
+        </div>
       </div>
 
       {resumen && (
@@ -3998,10 +4021,13 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
           <ol className="bg-white rounded-2xl border border-slate-200/80 shadow-[0_1px_2px_rgba(13,43,69,0.04),0_4px_16px_rgba(13,43,69,0.06)] divide-y divide-slate-100 overflow-hidden">
             {items.map((h) => {
               const emp = empresaDe(h.empresa_id)
+              const tarde = esSeguimiento(h) && esTarde(h.creado)
               return (
-                <li key={h.id} className="px-4 py-3 text-sm">
+                <li key={h.id} className={`px-4 py-3 text-sm ${tarde ? 'bg-violet-50 border-l-4 border-violet-500 pl-3' : ''}`}>
                   <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span className="text-xs text-slate-400 tabular-nums w-10 shrink-0">{hora(h.creado)}</span>
+                    {tarde
+                      ? <span className="text-xs text-violet-700 font-bold tabular-nums w-10 shrink-0 inline-flex items-center gap-0.5" title={TituloTarde}>{hora(h.creado)}<Moon className="w-3 h-3" /></span>
+                      : <span className="text-xs text-slate-400 tabular-nums w-10 shrink-0">{hora(h.creado)}</span>}
                     {emp ? (
                       <button onClick={() => onAbrir(emp)} className="font-semibold text-slate-900 hover:underline text-left">{h.empresa_nombre || emp.nombre}</button>
                     ) : (
