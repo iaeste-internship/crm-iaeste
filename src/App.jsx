@@ -845,6 +845,75 @@ function AccionesContacto({ emp, yo, plantilla = PLANTILLA_DEFECTO, onEmail }) {
   )
 }
 
+// ---------- Corregir un seguimiento ya publicado ----------
+// h: entrada de la línea de seguimientos (fila de estado o de nota) con `texto` y, si existe, `nota`
+// (la fila de historial que guarda el texto). Lo puede corregir quien lo escribió o un admin del centro;
+// la comprobación de verdad la hace la función editar_seguimiento de Supabase
+// (migracion_editar_seguimiento.sql). Si a un cambio de estado le faltó la nota, se le puede añadir.
+// Corregir el texto no cambia la fecha del seguimiento ni da ni quita puntos.
+function TextoSeguimiento({ h, puede, onGuardado, className = '' }) {
+  const [editando, setEditando] = useState(false)
+  const [txt, setTxt] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const editada = h.nota?.editado
+
+  const abrir = () => { setTxt(h.texto || ''); setErr(''); setEditando(true) }
+  const guardar = async () => {
+    const t = txt.trim()
+    if (!t) { setErr('La nota no puede quedar vacía.'); return }
+    if (t === (h.texto || '').trim()) { setEditando(false); return }
+    setBusy(true); setErr('')
+    const { error } = await supabase.rpc('editar_seguimiento', { p_id: h.id, p_texto: t })
+    setBusy(false)
+    if (error) {
+      setErr(/function|schema cache/i.test(error.message) ? 'Falta ejecutar migracion_editar_seguimiento.sql en Supabase.' : error.message)
+      return
+    }
+    setEditando(false)
+    onGuardado?.()
+  }
+
+  if (editando) {
+    return (
+      <div className={className}>
+        <textarea autoFocus value={txt} onChange={(e) => setTxt(e.target.value)} rows={3} maxLength={500}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) guardar(); if (e.key === 'Escape') setEditando(false) }}
+          className="w-full px-2.5 py-1.5 rounded-lg border border-blue-300 bg-white text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#0e2d4d]/30 resize-none" />
+        <div className="flex items-center gap-2 mt-1">
+          <span className="text-[11px] text-slate-400">{txt.length}/500</span>
+          {err && <span className="text-xs text-rose-600">{err}</span>}
+          <span className="flex-1" />
+          <button onClick={() => setEditando(false)} className="text-xs text-slate-500 hover:underline">Cancelar</button>
+          <button onClick={guardar} disabled={busy}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-[#0e2d4d] text-white text-xs font-semibold disabled:opacity-40">
+            <Save className="w-3.5 h-3.5" />{busy ? 'Guardando…' : 'Guardar'}
+          </button>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className={`flex items-start gap-1.5 ${className}`}>
+      <div className="flex-1 min-w-0">
+        {h.texto ? <p className="text-slate-700 whitespace-pre-wrap break-words">{h.texto}</p>
+          : <p className="text-xs text-slate-400 italic">Sin nota</p>}
+        {editada && (
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            Corregida{h.nota.editado_por ? ` por ${h.nota.editado_por}` : ''} · {fecha(h.nota.editado)}
+          </p>
+        )}
+      </div>
+      {puede && (
+        <button onClick={abrir} title={h.texto ? 'Corregir la nota' : 'Añadir la nota que faltó'}
+          className="shrink-0 p-1 -mt-0.5 rounded text-slate-400 hover:text-blue-700 hover:bg-blue-50">
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+      )}
+    </div>
+  )
+}
+
 // ---------- Modal de empresa ----------
 function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmin, me, todas = [], onSaved, onDeleted, onClose }) {
   const nueva = !empresa
@@ -861,6 +930,7 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
   const [addPrac, setAddPrac] = useState(false)
   const practicas = empresa?.practicas || []
   const [hist, setHist] = useState(null) // null = cargando
+  const [recargaHist, setRecargaHist] = useState(0) // sube al corregir un seguimiento
 
   useEffect(() => {
     if (nueva) { setHist([]); return }
@@ -871,7 +941,7 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
       .order('creado', { ascending: false })
       .limit(50)
       .then(({ data }) => setHist(data || []))
-  }, [nueva, empresa?.id])
+  }, [nueva, empresa?.id, recargaHist])
 
   // Un miembro puede rellenar todos los campos al CREAR una empresa.
   // Al editar una existente puede tocar los datos de contacto (persona, teléfono,
@@ -998,9 +1068,9 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
       if (h.accion === 'estado') {
         const n = notaDe.get(claveSeg(h))
         if (n) usadas.add(n.id)
-        out.push({ ...h, texto: n?.detalle || '' })
+        out.push({ ...h, texto: n?.detalle || '', nota: n })
       } else if (h.accion === 'nota') {
-        if (!usadas.has(h.id) && !hist.some((e) => e.accion === 'estado' && claveSeg(e) === claveSeg(h))) out.push({ ...h, texto: h.detalle })
+        if (!usadas.has(h.id) && !hist.some((e) => e.accion === 'estado' && claveSeg(e) === claveSeg(h))) out.push({ ...h, texto: h.detalle, nota: h })
       } else out.push(h)
     }
     return out
@@ -1258,8 +1328,8 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
                         ? <span className="inline-flex items-center gap-1 text-violet-700 font-semibold" title={TituloTarde}><Moon className="w-3 h-3" />{h.usuario_nombre} · {fecha(h.creado)}</span>
                         : <span className="text-slate-400">{h.usuario_nombre} · {fecha(h.creado)}</span>}
                     </div>
-                    {h.texto ? <p className="text-slate-700 whitespace-pre-wrap break-words">{h.texto}</p>
-                      : <p className="text-slate-400 italic">Sin nota</p>}
+                    <TextoSeguimiento h={h} puede={isAdmin || h.usuario_id === me.id}
+                      onGuardado={() => setRecargaHist((r) => r + 1)} />
                   </li>
                 ) : (
                   <li key={h.id} className="flex gap-2 text-xs px-1">
@@ -3838,19 +3908,22 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
   const [busca, setBusca] = useState('')
   const [filas, setFilas] = useState(null)
   const [err, setErr] = useState('')
+  const [recarga, setRecarga] = useState(0) // sube al corregir un seguimiento
 
   useEffect(() => {
-    setFilas(null); setErr('')
+    // Al recargar tras corregir una nota no se vacía la lista, para no perder el sitio
+    if (!recarga) setFilas(null)
+    setErr('')
     traerTodo(() => {
       let q = supabase
         .from('historial')
-        .select('id, empresa_id, usuario_id, usuario_nombre, empresa_nombre, accion, detalle, estado_anterior, estado_nuevo, creado')
+        .select('*') // incluye editado / editado_por si ya se ha ejecutado migracion_editar_seguimiento.sql
       q = empresa ? q.eq('empresa_id', empresa.id) : q.gte('creado', sumarDias(-dias) + 'T00:00:00')
       return q.order('creado', { ascending: false }).order('id', { ascending: false })
     })
       .then(setFilas)
       .catch((e) => { setErr(e.message); setFilas([]) })
-  }, [dias, empresa?.id, version])
+  }, [dias, empresa?.id, version, recarga])
 
   const esSeguimiento = (h) => h.accion === 'estado' || h.accion === 'nota'
   // Un cambio de estado y su nota se guardan como dos filas con la misma clave: se juntan en una
@@ -3860,8 +3933,8 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
     const conEstado = new Set(filas.filter((h) => h.accion === 'estado').map(claveSeg))
     const out = []
     for (const h of filas) {
-      if (h.accion === 'estado') out.push({ ...h, texto: notaDe.get(claveSeg(h))?.detalle || '' })
-      else if (h.accion === 'nota') { if (!conEstado.has(claveSeg(h))) out.push({ ...h, texto: h.detalle }) }
+      if (h.accion === 'estado') { const n = notaDe.get(claveSeg(h)); out.push({ ...h, texto: n?.detalle || '', nota: n }) }
+      else if (h.accion === 'nota') { if (!conEstado.has(claveSeg(h))) out.push({ ...h, texto: h.detalle, nota: h }) }
       else out.push(h)
     }
     const q = busca.trim().toLowerCase()
@@ -4050,9 +4123,7 @@ function Seguimiento({ users, companies, nombreDe, version, onAbrir }) {
                     <span className="text-xs text-slate-500 ml-auto">{h.usuario_nombre}</span>
                   </div>
                   {(h.accion === 'estado' || h.accion === 'nota') ? (
-                    h.texto
-                      ? <p className="mt-1 pl-12 text-slate-700 whitespace-pre-wrap break-words">{h.texto}</p>
-                      : <p className="mt-1 pl-12 text-xs text-slate-400 italic">Sin nota</p>
+                    <TextoSeguimiento h={h} puede className="mt-1 pl-12" onGuardado={() => setRecarga((r) => r + 1)} />
                   ) : h.detalle ? (
                     <p className="mt-1 pl-12 text-xs text-slate-600 break-words">{detalleLegible(h)}</p>
                   ) : null}
