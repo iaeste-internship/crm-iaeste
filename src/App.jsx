@@ -50,6 +50,8 @@ const estadoDe = (id) => ESTADOS.find((e) => e.id === id) || ESTADOS[0]
 
 // Cuántas empresas sin contactar se asignan de golpe y a partir de cuántas se avisa
 const LOTE = 5
+// Atajo «Volver a llamar»: a cuántos días se programa el siguiente intento
+const DIAS_VOLVER_A_LLAMAR = 3
 // Pestaña de empresas sin centro (bote común, compartido por todos los centros)
 const BOTE = '__bote'
 // Roles: admin = admin de centro (solo su centro); superadmin = admin general (todos los centros)
@@ -949,12 +951,15 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
   // responsable siguen siendo solo de admin.
   const camposEditables = isAdmin || nueva
 
-  const guardar = async (cambios = {}, mensaje, notaAuto = '') => {
+  // combinar: la nota automática va delante y lo que se haya escrito a mano detrás (atajo «Volver a llamar»)
+  const guardar = async (cambios = {}, mensaje, notaAuto = '', combinar = false) => {
     const f = { ...fForm, ...cambios }
     if (camposEditables && !f.nombre.trim()) { setErr('La empresa necesita un nombre.'); return }
     if (cifDup) { setErr(`Ese CIF ya es de «${cifDup.nombre}». No se pueden repetir CIF en el CRM.`); return }
     // Cada seguimiento es una nota nueva; cambiar de estado obliga a escribirla
-    const nota = (nuevaNota.trim() || notaAuto).slice(0, 500)
+    const nota = (combinar && notaAuto && nuevaNota.trim()
+      ? `${notaAuto}: ${nuevaNota.trim()}`
+      : (nuevaNota.trim() || notaAuto)).slice(0, 500)
     // La nota es obligatoria al cambiar de estado, salvo en el primer paso desde «Sin contactar»
     if (!nueva && f.estado !== empresa.estado && empresa.estado !== 'sin_contactar' && !nota) {
       setAbrirNota(true)
@@ -1056,6 +1061,20 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
         ? 'No se pudo copiar la plantilla: escríbela a mano en Gmail' + (pasa ? ' · marcada como Mail enviado' : '')
         : (pasa ? 'Marcada como Mail enviado ✓' : 'Guardado ✓')
     guardar(cambios, msg, notaAuto)
+  }
+
+  // Atajo «Volver a llamar» (no lo cogen / están indecisos): en un clic apunta el intento como
+  // seguimiento (nota automática con la fecha), programa el próximo contacto y guarda.
+  // «Sin contactar» pasa a «No lo cogen» (cuenta como contacto); cualquier otro estado se respeta.
+  // Si se ha elegido a mano una fecha futura en «Próximo contacto», se usa esa en vez de +3 días.
+  const volverALlamar = (motivo) => {
+    if (nueva) return
+    const elegida = f.proximo_contacto && f.proximo_contacto !== empresa.proximo_contacto && f.proximo_contacto > sumarDias(0)
+    const cuando = elegida ? f.proximo_contacto : sumarDias(DIAS_VOLVER_A_LLAMAR)
+    const cambios = { proximo_contacto: cuando, ...(f.estado === 'sin_contactar' ? { estado: 'no_contesta' } : {}) }
+    const hoyTxt = fechaCorta(sumarDias(0))
+    const notaAuto = `${motivo === 'indecisos' ? 'Indecisos' : 'No lo cogen'} (${hoyTxt}) · volver a llamar el ${fechaCorta(cuando)}`
+    guardar(cambios, `Apuntado ✓ · volver a llamar el ${fechaCorta(cuando)}`, notaAuto, true)
   }
 
   // Línea de seguimientos: cada cambio de estado con su nota, cada nota suelta y el resto de movimientos
@@ -1275,6 +1294,22 @@ function EmpresaModal({ empresa, users, asignables = users, centros = [], isAdmi
               )}
             </div>
           </div>
+          {!nueva && (
+            <div className="rounded-xl border border-cyan-200 bg-cyan-50/60 px-3 py-2.5">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-cyan-800 mb-2">
+                <Phone className="w-3.5 h-3.5" />Volver a llamar
+                <span className="font-normal text-cyan-700/80">· apunta el intento y te lo recuerda en {DIAS_VOLVER_A_LLAMAR} días</span>
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {[['nocoge', 'No lo cogen'], ['indecisos', 'Están indecisos']].map(([id, label]) => (
+                  <button key={id} onClick={() => volverALlamar(id)} disabled={busy || !!cifDup}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-cyan-300 bg-white text-xs font-medium text-cyan-800 hover:bg-cyan-100 disabled:opacity-50">
+                    <CalendarClock className="w-3.5 h-3.5" />{label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="pt-2 border-t border-slate-100">
             <div className="flex items-center justify-between mb-2">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 uppercase tracking-wide">
