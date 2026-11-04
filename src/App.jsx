@@ -3650,11 +3650,17 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
   const [passDe, setPassDe] = useState(null)   // usuario al que se le pone contraseña temporal
   const [passTmp, setPassTmp] = useState('')
   const [passOk, setPassOk] = useState('')
+  const [passErr, setPassErr] = useState('') // el error va dentro de la ventana (si no, queda tapado detrás)
+  const [passBusy, setPassBusy] = useState(false)
+  const abrirTemporal = (u) => { setPassDe(u); setPassTmp(''); setPassOk(''); setPassErr('') }
   const ponerTemporal = async () => {
-    setErr(''); setPassOk('')
-    { const prob = problemaPass(passTmp); if (prob) { setErr(prob); return } }
+    if (passBusy) return
+    setErr(''); setPassOk(''); setPassErr('')
+    { const prob = problemaPass(passTmp); if (prob) { setPassErr(prob); return } }
+    setPassBusy(true)
     const { error } = await supabase.rpc('admin_poner_contrasena', { p_usuario: passDe.id, p_contrasena: passTmp })
-    if (error) { setErr(`No se ha podido cambiar: ${error.message}`); return }
+    setPassBusy(false)
+    if (error) { setPassErr(`No se ha podido cambiar: ${error.message}`); return }
     setPassOk(`Listo: ${passDe.nombre} ya puede entrar con «${passTmp}». Dile que la cambie con el icono de la llave, arriba a la derecha.`)
     setPassDe(null); setPassTmp('')
   }
@@ -3767,7 +3773,7 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
                 <UserMinus className="w-3.5 h-3.5" />−{LOTE}
               </button>
               {u.id !== me.id && (
-                <button onClick={() => { setPassDe(u); setPassTmp(''); setPassOk('') }} title="Ponerle una contraseña temporal"
+                <button onClick={() => abrirTemporal(u)} title="Ponerle una contraseña temporal"
                   className="p-1.5 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50">
                   <KeyRound className="w-3.5 h-3.5" />
                 </button>
@@ -3807,10 +3813,11 @@ function Equipo({ users, centro, isSuper, centros = [], companies, me, baremo = 
           <div className="w-full max-w-sm bg-white rounded-2xl shadow-xl p-6 space-y-3" onClick={(e) => e.stopPropagation()}>
             <h2 className="font-bold text-slate-900">Contraseña temporal para {passDe.nombre}</h2>
             <p className="text-xs text-slate-500">Su contraseña actual dejará de valer. Pásale la temporal por privado y pídele que la cambie al entrar.</p>
-            <Input value={passTmp} autoFocus onChange={(e) => setPassTmp(e.target.value)} placeholder={`Mínimo ${PASS_MIN} caracteres, con letras y números`} onKeyDown={(e) => e.key === 'Enter' && ponerTemporal()} />
+            <Input value={passTmp} autoFocus onChange={(e) => { setPassTmp(e.target.value); setPassErr('') }} placeholder={`Mínimo ${PASS_MIN} caracteres, con letras y números`} onKeyDown={(e) => e.key === 'Enter' && ponerTemporal()} />
+            {passErr && <p className="text-sm text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{passErr}</p>}
             <div className="flex gap-2 justify-end">
               <Btn variant="ghost" onClick={() => setPassDe(null)}>Cancelar</Btn>
-              <Btn onClick={ponerTemporal}>Cambiar contraseña</Btn>
+              <Btn onClick={ponerTemporal} disabled={passBusy}>{passBusy ? 'Cambiando…' : 'Cambiar contraseña'}</Btn>
             </div>
           </div>
         </div>
