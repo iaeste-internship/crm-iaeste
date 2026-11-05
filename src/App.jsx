@@ -562,6 +562,18 @@ const leerErrorEnlace = () => {
     : (h.get('error_description') || q.get('error_description') || 'El enlace no es válido.').replace(/\+/g, ' ')
 }
 
+// Enlaces de los correos de Supabase (confirmar cuenta, recuperar contraseña) con el formato
+// …/?token_hash=XXX&type=recovery|email. Se canjean desde la propia web (verifyOtp), así que funcionan
+// aunque la red bloquee supabase.co, y los antivirus del correo que «abren» el enlace no lo gastan.
+// Se lee al cargar y se limpia la URL para que no se quede el token a la vista.
+const ENLACE_CORREO = (() => {
+  const q = new URLSearchParams(window.location.search)
+  const token_hash = q.get('token_hash'), type = q.get('type')
+  if (!token_hash || !type) return null
+  window.history.replaceState(null, '', window.location.pathname)
+  return { token_hash, type }
+})()
+
 // ---------- Cambiar mi contraseña (también al volver de un enlace de recuperación) ----------
 function CambiarContrasena({ recuperacion, onClose }) {
   const [p1, setP1] = useState('')
@@ -613,7 +625,7 @@ function CambiarContrasena({ recuperacion, onClose }) {
 }
 
 // ---------- Login / Registro / He olvidado mi contraseña ----------
-function Auth() {
+function Auth({ errorEnlace = '' }) {
   // Con ?registro en el enlace (https://…/?registro) se abre directamente en «Crear cuenta»
   const [modo, setModo] = useState(() =>
     new URLSearchParams(window.location.search).has('registro') ? 'registro' : 'login'
@@ -622,7 +634,9 @@ function Auth() {
   const [email, setEmail] = useState('')
   const [pass, setPass] = useState('')
   const [pass2, setPass2] = useState('')
-  const [err, setErr] = useState(() => leerErrorEnlace())
+  const [err, setErr] = useState(() => errorEnlace || leerErrorEnlace())
+  // El enlace del correo se comprueba en segundo plano: si falla, el error llega después
+  useEffect(() => { if (errorEnlace) { setErr(errorEnlace); setModo('login') } }, [errorEnlace])
   const [info, setInfo] = useState('')
   const [sinConfirmar, setSinConfirmar] = useState('') // email pendiente de confirmar (para reenviar)
   const [busy, setBusy] = useState(false)
@@ -5370,6 +5384,7 @@ export default function App() {
   const [modal, setModal] = useState(null) // null | 'nueva' | empresa
   const [aviso, setAviso] = useState('')
   const [cambiarPass, setCambiarPass] = useState('') // '' | 'normal' | 'recuperacion'
+  const [errorEnlace, setErrorEnlace] = useState('') // error al canjear el enlace de un correo
   const [ultimos, setUltimos] = useState(null) // Map empresa_id → fecha (ISO) de su última nota o cambio de estado
   const [orden, setOrden] = useState('') // '' = automático | 'antiguedad' | 'nombre'
   const [mejorasAbierto, setMejorasAbierto] = useState(false) // false | 'novedades' | 'ideas'
@@ -5389,6 +5404,14 @@ export default function App() {
       // Al entrar desde el enlace del correo de recuperación, se pide la contraseña nueva
       if (evento === 'PASSWORD_RECOVERY') setCambiarPass('recuperacion')
     })
+    if (ENLACE_CORREO) {
+      supabase.auth.verifyOtp(ENLACE_CORREO).then(({ error }) => {
+        if (!error) { if (ENLACE_CORREO.type === 'recovery') setCambiarPass('recuperacion'); return }
+        setErrorEnlace(/expired|invalid|not found/i.test(error.message || '') || error.code === 'otp_expired'
+          ? 'El enlace ha caducado o ya se ha usado. Pide uno nuevo.'
+          : `El enlace no es válido: ${error.message}`)
+      })
+    }
     return () => sub.subscription.unsubscribe()
   }, [])
 
@@ -5469,7 +5492,7 @@ export default function App() {
   if (session === undefined) {
     return <div className="min-h-screen bg-[#f4f6fa] flex items-center justify-center text-slate-400 text-sm">Cargando…</div>
   }
-  if (!session) return <Auth />
+  if (!session) return <Auth errorEnlace={errorEnlace} />
   if (!me) {
     return <div className="min-h-screen bg-[#f4f6fa] flex items-center justify-center text-slate-400 text-sm">Preparando tu perfil…</div>
   }
